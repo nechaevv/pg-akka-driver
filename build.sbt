@@ -4,9 +4,8 @@ name := "pg-akka-driver"
 
 scalaVersion := "2.11.8"
 
-val akkaVersion = "2.4.1"
+val akkaVersion = "2.4.8"
 
 libraryDependencies ++= Seq(
-      "com.typesafe.akka" %% "akka-actor" % akkaVersion
-//      "com.typesafe.akka" %% "akka-slf4j" % akkaVersion
+      "com.typesafe.akka" %% "akka-stream" % akkaVersion
 )
