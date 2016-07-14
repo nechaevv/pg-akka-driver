@@ -1,11 +1,14 @@
 package com.github.nechaevv.postgresql.protocol
 
+import java.nio.ByteOrder
+
 import akka.util.ByteString
 
 /**
   * Created by v.a.nechaev on 11.07.2016.
   */
 object Frontend {
+  implicit val byteOrder = ByteOrder.BIG_ENDIAN
   def decode(bs: ByteString) = {
     val i = bs.iterator
     i.getByte match {

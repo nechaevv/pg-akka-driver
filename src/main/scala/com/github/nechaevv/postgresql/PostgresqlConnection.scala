@@ -3,7 +3,7 @@ package com.github.nechaevv.postgresql
 import java.net.InetSocketAddress
 import java.nio.ByteOrder
 
-import akka.actor.{Actor, ActorRef, FSM}
+import akka.actor.{Actor, ActorRef, ActorSystem, FSM}
 import akka.actor.Actor.Receive
 import akka.io.Tcp.{Connect, Connected}
 import akka.io.{IO, Tcp}
@@ -14,7 +14,7 @@ import com.github.nechaevv.postgresql.protocol.{Backend, Frontend}
 /**
   * Created by v.a.nechaev on 11.07.2016.
   */
-class PostgresqlConnection(address: InetSocketAddress, database: String, user: String, password: String) extends FSM[ConnectionState, ConnectionStateData] {
+class PostgresqlConnection(address: InetSocketAddress, database: String, user: String, password: String)(implicit val actorSystem: ActorSystem) extends FSM[ConnectionState, ConnectionStateData] {
 
   startWith(Connecting, ConnectionStateData(None, None))
 
@@ -22,20 +22,20 @@ class PostgresqlConnection(address: InetSocketAddress, database: String, user: S
 
   when(Connecting) {
     case Event(Connected(remote, local), stateData) =>
-      self ! Backend.startupMessage(database, user)
+      //self ! Backend.startupMessage(database, user)
       goto(Authorizing) using stateData.copy(serverConnection = Some(sender))
   }
-
+/*
   when(StartingUp) {
     case Event()
     Frontend.decode()
   }
-
+*/
 }
 
 object PostgresqlConnection {
   val inboundFlow = Flow[ByteString].via(Framing.lengthField(4, 1, Int.MaxValue, ByteOrder.BIG_ENDIAN))
-  def auhorizeMessage =
+  //def auhorizeMessage =
 }
 
 sealed trait ConnectionState

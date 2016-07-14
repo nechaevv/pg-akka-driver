@@ -7,7 +7,7 @@ import akka.util.ByteString
   */
 object Backend {
   val protocolVersion = 3
-
+/*
   def encodePacket(t: Char, msg: ByteString) = ByteString.newBuilder
     .putByte(t).putInt(msg.length + 4).append(msg).result()
 
@@ -15,5 +15,5 @@ object Backend {
     .putInt(protocolVersion << 16)
     .putBytes("database".getBytes).putBytes(database.getBytes)
     .putBytes("user".getBytes).putBytes(user.getBytes).result())
-
+*/
 }
