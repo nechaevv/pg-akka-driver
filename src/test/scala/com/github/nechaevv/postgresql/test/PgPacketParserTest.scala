@@ -15,17 +15,26 @@ class PgPacketParserTest extends FlatSpec with Matchers {
   import PgPacketParserTest._
   import TestSuite._
 
-  "Parser" should "correctly parse single ByteString input" in {
+  val sink = Sink.seq[Packet]
+  val parserStage = new PgPacketParser
+
+  "Parser" should "parse single ByteString input" in {
     val source = Source.fromIterator(() => Seq(testInput1).iterator)
-    val sink = Sink.seq[Packet]
-    val parserStage = new PgPacketParser
     val result = Await.result(source.via(parserStage).runWith(sink), 1.minute)
     result should have length 1
-    result(1) shouldBe Packet(0x01, 6, ByteString(0x01, 0x02))
+    result.head shouldBe Packet(0x01, 6, ByteString(0x01, 0x02))
+  }
+  it should "parse message sequence" in {
+    val source = Source.fromIterator(() => Seq(testInput2 ++ testInput1 ++ testInput2).iterator)
+    val result = Await.result(source.via(parserStage).runWith(sink), 1.minute)
+    result should have length 2
+    result.head shouldBe Packet(1, 6, ByteString(1,2))
+    result.last shouldBe Packet(3, 6, ByteString(1,2,3,4))
   }
 
 }
 
 object PgPacketParserTest {
   val testInput1 = ByteString(0x01, 0x00, 0x00, 0x00, 0x06, 0x01, 0x02)
+  val testInput2 = ByteString(0x03, 0x00, 0x00, 0x00, 0x08, 0x01, 0x02, 0x03, 0x04)
 }

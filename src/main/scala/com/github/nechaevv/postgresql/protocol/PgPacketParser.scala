@@ -13,8 +13,8 @@ import scala.annotation.tailrec
   * Created by v.a.nechaev on 14.07.2016.
   */
 class PgPacketParser extends GraphStage[FlowShape[ByteString, Packet]] {
-  val in = Inlet[ByteString]("DelimiterFramingStage.in")
-  val out = Outlet[Packet]("DelimiterFramingStage.out")
+  val in = Inlet[ByteString]("PgPackerParserStage.in")
+  val out = Outlet[Packet]("PgPackerParserStage.out")
 
   override val shape: FlowShape[ByteString, Packet] = FlowShape(in, out)
   override def toString: String = "DelimiterFraming"
@@ -29,14 +29,27 @@ class PgPacketParser extends GraphStage[FlowShape[ByteString, Packet]] {
     override def onPush(): Unit = {
       buffer ++= grab(in)
       doParse()
+      pushIfReady()
     }
 
-    override def onPull(): Unit = doParse()
+    override def onPull(): Unit = {
+      pushIfReady()
+      tryPull()
+    }
 
-    override def onUpstreamFinish(): Unit = completeStage()
+    private def pushIfReady(): Unit = currentPacket foreach { packet =>
+      if (isAvailable(out) && packet.length == packet.payload.length + headerLength) {
+        push(out, packet)
+        currentPacket = None
+      }
+    }
 
-    @tailrec
-    def doParse(): Unit = {
+    override def onUpstreamFinish(): Unit = {
+      pushIfReady()
+      completeStage()
+    }
+
+    private def doParse(): Unit = {
       if (buffer.length >= headerLength + 1) {
         val (newPacket, leftover) = currentPacket match {
           case Some(packet) =>
@@ -52,17 +65,9 @@ class PgPacketParser extends GraphStage[FlowShape[ByteString, Packet]] {
             val leftover = if (leftoverLength > 0) iter.getByteString(leftoverLength) else ByteString.empty
             (Packet(packetType, packetLength, payload), leftover)
         }
-        if (newPacket.length == newPacket.payload.length + headerLength) {
-          push(out, newPacket)
-          currentPacket = None
-          if (isClosed(in)) completeStage()
-        } else {
-          currentPacket = Some(newPacket)
-          tryPull()
-        }
+        currentPacket = Some(newPacket)
         buffer = leftover
-        if (buffer.nonEmpty) doParse()
-      } else tryPull()
+      }
     }
 
     private def tryPull() = {
