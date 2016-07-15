@@ -17,7 +17,7 @@ class PgPacketParser extends GraphStage[FlowShape[ByteString, Packet]] {
   val out = Outlet[Packet]("PgPackerParserStage.out")
 
   override val shape: FlowShape[ByteString, Packet] = FlowShape(in, out)
-  override def toString: String = "DelimiterFraming"
+  override def toString: String = "PgPacketParser"
 
   override def createLogic(inheritedAttributes: Attributes): GraphStageLogic = new GraphStageLogic(shape) with InHandler with OutHandler {
     implicit val byteOrder = ByteOrder.BIG_ENDIAN
@@ -29,37 +29,30 @@ class PgPacketParser extends GraphStage[FlowShape[ByteString, Packet]] {
     override def onPush(): Unit = {
       buffer ++= grab(in)
       doParse()
-      if (isAvailable(in)) packetReady foreach { packet =>
-        push(out, packet)
-        currentPacket = None
-        doParse()
-      }
+      pushPacketIfAvailable()
     }
 
-    override def onPull(): Unit = packetReady match {
+    override def onPull(): Unit = pushPacketIfAvailable()
+
+    private def packetReady = currentPacket filter { packet => packet.length == packet.payload.length + headerLength }
+
+    private def pushPacketIfAvailable(): Unit = if (isAvailable(out)) packetReady match {
       case Some(packet) =>
         push(out, packet)
         currentPacket = None
         doParse()
+        if (isClosed(in) && currentPacket.isEmpty) completeStage()
       case None => tryPull()
     }
 
-    private def packetReady() = currentPacket collect {
-      case packet if packet.length == packet.payload.length + headerLength => packet
-    }
-
     override def onUpstreamFinish(): Unit = {
-      if (isAvailable(in)) packetReady.foreach { packet =>
-        push(out, packet)
-        currentPacket = None
-        doParse()
-      }
+      pushPacketIfAvailable()
       if (currentPacket.isEmpty) completeStage()
     }
 
     private def doParse(): Unit = currentPacket match {
       case Some(packet) =>
-        val (payload, leftover) = buffer splitAt (packet.payload.length - packet.length - headerLength)
+        val (payload, leftover) = buffer splitAt (packet.length - packet.payload.length - headerLength)
         currentPacket = Some(packet.copy(payload = packet.payload ++ payload))
         buffer = leftover
       case None => if (buffer.length >= headerLength + 1) {
@@ -76,9 +69,8 @@ class PgPacketParser extends GraphStage[FlowShape[ByteString, Packet]] {
     }
 
     private def tryPull() = {
-      if (isClosed(in)) {
-        failStage(new FramingException("Stream finished but there was a truncated final frame in the buffer"))
-      } else pull(in)
+      if (isClosed(in)) failStage(new FramingException("Upstream finished"))
+      else pull(in)
     }
 
     setHandlers(in, out, this)

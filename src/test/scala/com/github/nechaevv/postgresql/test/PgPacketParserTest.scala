@@ -18,8 +18,6 @@ class PgPacketParserTest extends FlatSpec with Matchers {
   val sink = Sink.seq[Packet]
   val parserStage = new PgPacketParser
 
-
-
   "Parser" should "parse single ByteString input" in {
     val source = Source(List(testInput1))
     val result = Await.result(source.via(parserStage).runWith(sink), 5.seconds)
