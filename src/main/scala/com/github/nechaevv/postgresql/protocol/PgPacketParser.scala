@@ -29,43 +29,48 @@ class PgPacketParser extends GraphStage[FlowShape[ByteString, Packet]] {
     override def onPush(): Unit = {
       buffer ++= grab(in)
       doParse()
-      pushIfReady()
-    }
-
-    override def onPull(): Unit = {
-      pushIfReady()
-      tryPull()
-    }
-
-    private def pushIfReady(): Unit = currentPacket foreach { packet =>
-      if (isAvailable(out) && packet.length == packet.payload.length + headerLength) {
+      if (isAvailable(in)) packetReady foreach { packet =>
         push(out, packet)
         currentPacket = None
+        doParse()
       }
     }
 
-    override def onUpstreamFinish(): Unit = {
-      pushIfReady()
-      completeStage()
+    override def onPull(): Unit = packetReady match {
+      case Some(packet) =>
+        push(out, packet)
+        currentPacket = None
+        doParse()
+      case None => tryPull()
     }
 
-    private def doParse(): Unit = {
-      if (buffer.length >= headerLength + 1) {
-        val (newPacket, leftover) = currentPacket match {
-          case Some(packet) =>
-            val (payload, leftover) = buffer splitAt (packet.payload.length - packet.length - headerLength)
-            (packet.copy(payload = packet.payload ++ payload), leftover)
-          case None =>
-            val iter = buffer.iterator
-            val packetType = iter.getByte
-            val packetLength = iter.getInt
-            val payloadLength = Math.min(packetLength - headerLength, buffer.length - headerLength - 1)
-            val payload = iter.getByteString(payloadLength)
-            val leftoverLength = buffer.length - payloadLength - headerLength - 1
-            val leftover = if (leftoverLength > 0) iter.getByteString(leftoverLength) else ByteString.empty
-            (Packet(packetType, packetLength, payload), leftover)
-        }
-        currentPacket = Some(newPacket)
+    private def packetReady() = currentPacket collect {
+      case packet if packet.length == packet.payload.length + headerLength => packet
+    }
+
+    override def onUpstreamFinish(): Unit = {
+      if (isAvailable(in)) packetReady.foreach { packet =>
+        push(out, packet)
+        currentPacket = None
+        doParse()
+      }
+      if (currentPacket.isEmpty) completeStage()
+    }
+
+    private def doParse(): Unit = currentPacket match {
+      case Some(packet) =>
+        val (payload, leftover) = buffer splitAt (packet.payload.length - packet.length - headerLength)
+        currentPacket = Some(packet.copy(payload = packet.payload ++ payload))
+        buffer = leftover
+      case None => if (buffer.length >= headerLength + 1) {
+        val iter = buffer.iterator
+        val packetType = iter.getByte
+        val packetLength = iter.getInt
+        val payloadLength = Math.min(packetLength - headerLength, buffer.length - headerLength - 1)
+        val payload = iter.getByteString(payloadLength)
+        val leftoverLength = buffer.length - payloadLength - headerLength - 1
+        val leftover = if (leftoverLength > 0) iter.getByteString(leftoverLength) else ByteString.empty
+        currentPacket = Some(Packet(packetType, packetLength, payload))
         buffer = leftover
       }
     }

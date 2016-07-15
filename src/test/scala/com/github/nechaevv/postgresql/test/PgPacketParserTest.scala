@@ -18,19 +18,38 @@ class PgPacketParserTest extends FlatSpec with Matchers {
   val sink = Sink.seq[Packet]
   val parserStage = new PgPacketParser
 
+
+
   "Parser" should "parse single ByteString input" in {
-    val source = Source.fromIterator(() => Seq(testInput1).iterator)
-    val result = Await.result(source.via(parserStage).runWith(sink), 1.minute)
+    val source = Source(List(testInput1))
+    val result = Await.result(source.via(parserStage).runWith(sink), 5.seconds)
     result should have length 1
     result.head shouldBe Packet(0x01, 6, ByteString(0x01, 0x02))
   }
   it should "parse message sequence" in {
-    val source = Source.fromIterator(() => Seq(testInput2 ++ testInput1 ++ testInput2).iterator)
-    val result = Await.result(source.via(parserStage).runWith(sink), 1.minute)
+    val source = Source(List(testInput1, testInput2))
+    val result = Await.result(source.via(parserStage).runWith(sink), 5.seconds)
     result should have length 2
     result.head shouldBe Packet(1, 6, ByteString(1,2))
-    result.last shouldBe Packet(3, 6, ByteString(1,2,3,4))
+    result.last shouldBe Packet(3, 8, ByteString(1,2,3,4))
   }
+
+  it should "parse several messages from single bytestring" in {
+    val source = Source(List(testInput1 ++ testInput2))
+    val result = Await.result(source.via(parserStage).runWith(sink), 5.seconds)
+    result should have length 2
+    result.head shouldBe Packet(1, 6, ByteString(1,2))
+    result.last shouldBe Packet(3, 8, ByteString(1,2,3,4))
+  }
+
+  it should "parse messages spit to random chunks" in {
+    val source = Source(List(testInput1.take(3), testInput1.drop(3) ++ testInput2.take(5), testInput2.drop(5)))
+    val result = Await.result(source.via(parserStage).runWith(sink), 5.seconds)
+    result should have length 2
+    result.head shouldBe Packet(1, 6, ByteString(1,2))
+    result.last shouldBe Packet(3, 8, ByteString(1,2,3,4))
+  }
+
 
 }
 
