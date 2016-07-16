@@ -18,6 +18,7 @@ class PgPacketParser extends GraphStage[FlowShape[ByteString, Packet]] {
 
   override def createLogic(inheritedAttributes: Attributes): GraphStageLogic = new GraphStageLogic(shape) with InHandler with OutHandler {
     var currentPacket: Option[Packet] = None
+    var packetLength = 0
     var buffer: ByteString = ByteString.empty
 
     override def onPush(): Unit = {
@@ -28,7 +29,7 @@ class PgPacketParser extends GraphStage[FlowShape[ByteString, Packet]] {
 
     override def onPull(): Unit = pushPacketIfAvailable()
 
-    private def packetReady = currentPacket filter { packet => packet.length == packet.payload.length }
+    private def packetReady = currentPacket filter { packet => packetLength == packet.payload.length }
 
     private def pushPacketIfAvailable(): Unit = if (isAvailable(out)) packetReady match {
       case Some(packet) =>
@@ -46,18 +47,18 @@ class PgPacketParser extends GraphStage[FlowShape[ByteString, Packet]] {
 
     private def doParse(): Unit = currentPacket match {
       case Some(packet) =>
-        val (payload, leftover) = buffer splitAt (packet.length - packet.payload.length)
+        val (payload, leftover) = buffer splitAt (packetLength - packet.payload.length)
         currentPacket = Some(packet.copy(payload = packet.payload ++ payload))
         buffer = leftover
       case None => if (buffer.length >= packetHeaderLength + 1) {
         val iter = buffer.iterator
         val packetType = iter.getByte
-        val packetLength = iter.getInt - packetHeaderLength
+        packetLength = iter.getInt - packetHeaderLength
         val payloadLength = Math.min(packetLength, buffer.length - packetHeaderLength - 1)
         val payload = iter.getByteString(payloadLength)
         val leftoverLength = buffer.length - payloadLength - packetHeaderLength - 1
         val leftover = if (leftoverLength > 0) iter.getByteString(leftoverLength) else ByteString.empty
-        currentPacket = Some(Packet(packetType, packetLength, payload))
+        currentPacket = Some(Packet(packetType, payload))
         buffer = leftover
       }
     }

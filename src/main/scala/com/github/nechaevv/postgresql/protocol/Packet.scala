@@ -5,4 +5,4 @@ import akka.util.ByteString
 /**
   * Created by v.a.nechaev on 07.07.2016.
   */
-case class Packet(messageType: Byte, length: Int, payload: ByteString)
+case class Packet(messageType: Byte, payload: ByteString)

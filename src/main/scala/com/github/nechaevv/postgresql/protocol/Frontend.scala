@@ -9,7 +9,7 @@ import akka.util.ByteIterator
   */
 object Frontend {
   implicit val byteOrder = ByteOrder.BIG_ENDIAN
-  def decode(p: Packet) = {
+  def decode(p: Packet): FrontendMessage = {
     val i = p.payload.iterator
     p.messageType match {
       case 'R' =>
@@ -17,27 +17,29 @@ object Frontend {
           case 0 => AuthenticationOk
           case 2 => AuthenticationKerberosV5
           case 3 => AuthenticationCleartextPassword
-          case 5 => new AuthenticationMD5Password(i, p.length)
+          case 5 => new AuthenticationMD5Password(i, p.payload.length)
           case 6 => AuthenticationSCMCredential
           case 7 => AuthenticationGSS
           case 8 => AuthenticationSSPI
-          case 9 => new AuthenticationGSSContinue(i, p.length)
+          case 9 => new AuthenticationGSSContinue(i, p.payload.length)
         }
     }
   }
 
+  sealed trait FrontendMessage
+
+  case object AuthenticationOk extends FrontendMessage
+  case object AuthenticationCleartextPassword extends FrontendMessage
+  case object AuthenticationKerberosV5 extends FrontendMessage
+  case class AuthenticationMD5Password(salt: Array[Byte]) extends FrontendMessage {
+    def this(bi: ByteIterator, packetLength: Int) = this(bi.getBytes(packetLength))
+  }
+  case object AuthenticationSCMCredential extends FrontendMessage
+  case object AuthenticationGSS extends FrontendMessage
+  case object AuthenticationSSPI extends FrontendMessage
+  case class AuthenticationGSSContinue(authData: Array[Byte]) extends FrontendMessage {
+    def this(bi: ByteIterator, packetLength: Int) = this(bi.getBytes(packetLength))
+  }
 
 }
 
-case object AuthenticationOk
-case object AuthenticationCleartextPassword
-case object AuthenticationKerberosV5
-case class AuthenticationMD5Password(salt: Array[Byte]) {
-  def this(bi: ByteIterator, packetLength: Int) = this(bi.getBytes(packetLength))
-}
-case object AuthenticationSCMCredential
-case object AuthenticationGSS
-case object AuthenticationSSPI
-case class AuthenticationGSSContinue(authData: Array[Byte]) {
-  def this(bi: ByteIterator, packetLength: Int) = this(bi.getBytes(packetLength))
-}
