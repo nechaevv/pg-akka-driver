@@ -2,7 +2,7 @@ package com.github.nechaevv.postgresql.test
 
 import akka.stream.scaladsl.{Sink, Source}
 import akka.util.ByteString
-import com.github.nechaevv.postgresql.protocol.{Packet, PgPacketParser}
+import com.github.nechaevv.postgresql.protocol.backend.{Packet, PgPacketParser}
 import org.scalatest.{FlatSpec, Matchers}
 
 import scala.concurrent.Await

@@ -9,7 +9,6 @@ import akka.io.Tcp.{Connect, Connected}
 import akka.io.{IO, Tcp}
 import akka.stream.scaladsl.{Flow, Framing}
 import akka.util.ByteString
-import com.github.nechaevv.postgresql.protocol.{Backend, Frontend}
 
 /**
   * Created by v.a.nechaev on 11.07.2016.

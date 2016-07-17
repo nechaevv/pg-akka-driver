@@ -1,4 +1,4 @@
-package com.github.nechaevv.postgresql.protocol
+package com.github.nechaevv.postgresql.protocol.backend
 
 import akka.util.ByteString
 
