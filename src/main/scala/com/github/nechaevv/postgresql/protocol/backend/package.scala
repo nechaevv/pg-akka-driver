@@ -11,19 +11,5 @@ import scala.annotation.tailrec
   */
 package object backend {
   implicit val byteOrder = ByteOrder.BIG_ENDIAN
-
-  def readString(bi: ByteIterator): String = {
-    val bb = ByteString.newBuilder
-    @tailrec
-    def readNextSymbol(): Unit = {
-      val c = bi.getByte
-      if (c > 0) {
-        bb.putByte(c)
-        readNextSymbol()
-      }
-    }
-    readNextSymbol()
-    bb.result().decodeString("UTF-8")
-  }
-
+  implicit def byteIteratorPimp(bi: ByteIterator): ByteIteratorExt = new ByteIteratorExt(bi)
 }

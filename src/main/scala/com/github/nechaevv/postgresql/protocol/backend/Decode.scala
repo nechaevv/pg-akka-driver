@@ -19,6 +19,11 @@ object Decode {
           case 8 => AuthenticationSSPI
           case 9 => new AuthenticationGSSContinue(i, p.payload.length)
         }
+      case 'C' => new CommandComplete(i)
+      case 'T' => new RowDescription(i)
+      case 'D' => new DataRow(i)
+      case 'Z' => new ReadyForQuery(i)
+      case 'I' => EmptyQueryResponse
       case t => UnknownMessage(t.toChar, p.payload)
     }
   }
