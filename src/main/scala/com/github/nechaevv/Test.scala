@@ -1,29 +1,66 @@
 package com.github.nechaevv
 
-import akka.actor.ActorSystem
-import akka.stream.ActorMaterializer
-import akka.stream.scaladsl.{Flow, Sink, Source, Tcp}
+import java.security.MessageDigest
+
+import akka.actor.Actor.Receive
+import akka.actor.Status.Failure
+import akka.actor.{Actor, ActorSystem, Props}
+import akka.stream.{ActorMaterializer, OverflowStrategy}
+import akka.stream.actor.ActorPublisher
+import akka.stream.scaladsl.{Flow, Keep, Sink, Source, Tcp}
 import akka.util.ByteString
-import com.github.nechaevv.postgresql.protocol.backend.{BackendMessage, PgPacketParser}
-import com.github.nechaevv.postgresql.protocol.frontend.{FrontendMessage, StartupMessage}
+import com.github.nechaevv.postgresql.protocol.backend.{AuthenticationCleartextPassword, AuthenticationMD5Password, AuthenticationOk, BackendMessage, PgPacketParser}
+import com.github.nechaevv.postgresql.protocol.frontend.{FrontendMessage, PasswordMessage, StartupMessage}
 import com.github.nechaevv.postgresql.protocol.backend
 import com.typesafe.scalalogging.LazyLogging
-
-import scala.concurrent.Await
-import scala.concurrent.duration._
 
 /**
   * Created by v.a.nechaev on 07.07.2016.
   */
 object Test extends App with LazyLogging {
   implicit val as = ActorSystem()
-  implicit val am = ActorMaterializer()
-  val commandSource = Source(List(StartupMessage("trading1", "trading"))).via(Flow[FrontendMessage].map(_.encode))
-  val responseSink = Sink.foreach[BackendMessage] { msg =>
-    logger.info(s"Received frontend message: $msg")
-  }
-  val processFlow = Flow.fromSinkAndSource(Flow[ByteString].via(new PgPacketParser).map(backend.Decode.apply).to(responseSink), commandSource)
   logger.info("Connecting")
-  val r = Tcp().outgoingConnection("localhost", 5432).join(processFlow).run()
-  Await.result(r, 5.seconds)
+  as.actorOf(Props[TestActor])
 }
+
+class TestActor extends Actor with LazyLogging {
+  val database = "trading"
+  val user = "trading"
+  val password = "trading"
+
+  implicit val as = context.system
+  implicit val am = ActorMaterializer()
+
+  val commandSource = Source.actorRef[FrontendMessage](1000, OverflowStrategy.fail)
+  val responseSink = Sink.actorRef[BackendMessage](self, OnCompleted)
+  val processFlow = Flow.fromSinkAndSourceMat(Flow[ByteString].via(new PgPacketParser).map(backend.Decode.apply).to(responseSink), commandSource.map(_.encode))(Keep.right)
+  val commandListener = Tcp().outgoingConnection("localhost", 5432).joinMat(processFlow)(Keep.right).run()
+  commandListener ! StartupMessage(database, user)
+
+  override def receive: Receive = {
+    case AuthenticationCleartextPassword =>
+      logger.info("Requested cleartext auth")
+      commandListener ! PasswordMessage(password)
+    case AuthenticationMD5Password(salt) =>
+      logger.info("Requested md5 auth")
+      val md = MessageDigest.getInstance("MD5")
+      md.update(password.getBytes())
+      md.update(user.getBytes())
+      md.update(toHex(md.digest()).getBytes())
+      md.update(salt)
+      val md5pass = "md5" + toHex(md.digest())
+      commandListener ! PasswordMessage(md5pass)
+    case AuthenticationOk =>
+      logger.info("Authentication succeeded")
+    case OnCompleted =>
+      logger.info("Connection closed")
+    case Failure(exception) =>
+      logger.error("Processing error", exception)
+    case msg => logger.info(s"Received message: $msg")
+  }
+
+  def toHex(bytes: Array[Byte]): String = bytes.map(b => "%02x".format(b & 0xFF)).mkString
+
+}
+
+case object OnCompleted

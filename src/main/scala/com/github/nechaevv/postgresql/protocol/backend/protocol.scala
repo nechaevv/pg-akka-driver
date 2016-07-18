@@ -9,7 +9,7 @@ case object AuthenticationOk extends BackendMessage
 case object AuthenticationCleartextPassword extends BackendMessage
 case object AuthenticationKerberosV5 extends BackendMessage
 case class AuthenticationMD5Password(salt: Array[Byte]) extends BackendMessage {
-  def this(bi: ByteIterator, packetLength: Int) = this(bi.getBytes(packetLength))
+  def this(bi: ByteIterator) = this(bi.getBytes(4))
 }
 case object AuthenticationSCMCredential extends BackendMessage
 case object AuthenticationGSS extends BackendMessage

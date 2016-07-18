@@ -13,7 +13,7 @@ object Decode {
           case 0 => AuthenticationOk
           case 2 => AuthenticationKerberosV5
           case 3 => AuthenticationCleartextPassword
-          case 5 => new AuthenticationMD5Password(i, p.payload.length)
+          case 5 => new AuthenticationMD5Password(i)
           case 6 => AuthenticationSCMCredential
           case 7 => AuthenticationGSS
           case 8 => AuthenticationSSPI
