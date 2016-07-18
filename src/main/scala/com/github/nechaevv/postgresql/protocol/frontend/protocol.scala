@@ -27,3 +27,7 @@ case class PasswordMessage(password: String) extends FrontendMessage {
 case class Query(query: String) extends FrontendMessage {
   override def encode: ByteString = encodePacket('Q', ByteString.newBuilder.putNullTerminatedString(query).result())
 }
+
+case object Terminate extends FrontendMessage {
+  override def encode: ByteString = encodePacket('X', ByteString.empty)
+}

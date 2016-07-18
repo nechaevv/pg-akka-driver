@@ -54,4 +54,12 @@ case class ReadyForQuery(txStatus: Char) extends BackendMessage {
 
 case object EmptyQueryResponse extends BackendMessage
 
+case class ParameterStatus(name: String, value: String) extends BackendMessage {
+  def this(bi: ByteIterator) = this(bi.getNullTerminatedString, bi.getNullTerminatedString)
+}
+
+case class BackendKeyData(processId: Int, secretKey: Int) extends BackendMessage {
+  def this(bi: ByteIterator) = this(bi.getInt, bi.getInt)
+}
+
 case class UnknownMessage(t: Char, content: ByteString) extends BackendMessage

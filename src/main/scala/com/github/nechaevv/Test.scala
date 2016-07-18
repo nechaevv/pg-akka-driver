@@ -1,18 +1,21 @@
 package com.github.nechaevv
 
+import java.net.InetSocketAddress
 import java.security.MessageDigest
 
 import akka.actor.Actor.Receive
-import akka.actor.Status.Failure
-import akka.actor.{Actor, ActorSystem, Props}
+import akka.actor.Status.{Failure, Success}
+import akka.actor.{Actor, ActorSystem, PoisonPill, Props}
 import akka.stream.{ActorMaterializer, OverflowStrategy}
 import akka.stream.actor.ActorPublisher
 import akka.stream.scaladsl.{Flow, Keep, Sink, Source, Tcp}
 import akka.util.ByteString
-import com.github.nechaevv.postgresql.protocol.backend.{AuthenticationCleartextPassword, AuthenticationMD5Password, AuthenticationOk, BackendMessage, PgPacketParser}
-import com.github.nechaevv.postgresql.protocol.frontend.{FrontendMessage, PasswordMessage, StartupMessage}
+import com.github.nechaevv.postgresql.protocol.backend.{AuthenticationCleartextPassword, AuthenticationMD5Password, AuthenticationOk, BackendMessage, CommandComplete, PgPacketParser, ReadyForQuery}
+import com.github.nechaevv.postgresql.protocol.frontend.{FrontendMessage, PasswordMessage, Query, StartupMessage, Terminate}
 import com.github.nechaevv.postgresql.protocol.backend
 import com.typesafe.scalalogging.LazyLogging
+
+import scala.collection.mutable
 
 /**
   * Created by v.a.nechaev on 07.07.2016.
@@ -30,12 +33,15 @@ class TestActor extends Actor with LazyLogging {
 
   implicit val as = context.system
   implicit val am = ActorMaterializer()
+  val queries = mutable.Queue("SELECT * FROM \"TEST\"")
 
   val commandSource = Source.actorRef[FrontendMessage](1000, OverflowStrategy.fail)
   val responseSink = Sink.actorRef[BackendMessage](self, OnCompleted)
   val processFlow = Flow.fromSinkAndSourceMat(Flow[ByteString].via(new PgPacketParser).map(backend.Decode.apply).to(responseSink), commandSource.map(_.encode))(Keep.right)
-  val commandListener = Tcp().outgoingConnection("localhost", 5432).joinMat(processFlow)(Keep.right).run()
+  val commandListener = Tcp().outgoingConnection(remoteAddress = new InetSocketAddress("localhost", 5432), halfClose = false).joinMat(processFlow)(Keep.right).run()
   commandListener ! StartupMessage(database, user)
+
+  override def postStop(): Unit = context.system.terminate()
 
   override def receive: Receive = {
     case AuthenticationCleartextPassword =>
@@ -54,8 +60,18 @@ class TestActor extends Actor with LazyLogging {
       logger.info("Authentication succeeded")
     case OnCompleted =>
       logger.info("Connection closed")
+      self ! PoisonPill
     case Failure(exception) =>
       logger.error("Processing error", exception)
+    case ReadyForQuery(_) =>
+      logger.info("Ready for query")
+      if (queries.isEmpty) {
+        commandListener ! Terminate
+        commandListener ! Success(())
+      } else commandListener ! Query(queries.dequeue())
+    case CommandComplete(_) =>
+      logger.info("Command complete")
+
     case msg => logger.info(s"Received message: $msg")
   }
 

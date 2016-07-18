@@ -64,7 +64,7 @@ class PgPacketParser extends GraphStage[FlowShape[ByteString, Packet]] {
     }
 
     private def tryPull() = {
-      if (isClosed(in)) failStage(new FramingException("Upstream finished"))
+      if (isClosed(in)) completeStage()
       else pull(in)
     }
 

@@ -24,6 +24,8 @@ object Decode {
       case 'D' => new DataRow(i)
       case 'Z' => new ReadyForQuery(i)
       case 'I' => EmptyQueryResponse
+      case 'S' => new ParameterStatus(i)
+      case 'K' => new BackendKeyData(i)
       case t => UnknownMessage(t.toChar, p.payload)
     }
   }
