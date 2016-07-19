@@ -12,4 +12,12 @@ import scala.annotation.tailrec
 package object backend {
   implicit val byteOrder = ByteOrder.BIG_ENDIAN
   implicit def byteIteratorPimp(bi: ByteIterator): ByteIteratorExt = new ByteIteratorExt(bi)
+
+  @tailrec
+  def readFieldMap(bi: ByteIterator, fields: List[(Char, String)]): List[(Char, String)] = {
+    val fieldType = bi.getByte
+    if (fieldType == 0) fields
+    else readFieldMap(bi, (fieldType.toChar, bi.getNullTerminatedString) :: fields)
+  }
+
 }

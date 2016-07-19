@@ -10,8 +10,8 @@ import akka.stream.{ActorMaterializer, OverflowStrategy}
 import akka.stream.actor.ActorPublisher
 import akka.stream.scaladsl.{Flow, Keep, Sink, Source, Tcp}
 import akka.util.ByteString
-import com.github.nechaevv.postgresql.protocol.backend.{AuthenticationCleartextPassword, AuthenticationMD5Password, AuthenticationOk, BackendMessage, CommandComplete, PgPacketParser, ReadyForQuery}
-import com.github.nechaevv.postgresql.protocol.frontend.{FrontendMessage, PasswordMessage, Query, StartupMessage, Terminate}
+import com.github.nechaevv.postgresql.protocol.backend.{AuthenticationCleartextPassword, AuthenticationMD5Password, AuthenticationOk, BackendMessage, BindComplete, CommandComplete, DataRow, ParseComplete, PgPacketParser, ReadyForQuery}
+import com.github.nechaevv.postgresql.protocol.frontend.{Bind, Execute, FrontendMessage, Parse, PasswordMessage, Query, StartupMessage, Sync, Terminate}
 import com.github.nechaevv.postgresql.protocol.backend
 import com.typesafe.scalalogging.LazyLogging
 
@@ -37,7 +37,7 @@ class TestActor extends Actor with LazyLogging {
 
   val commandSource = Source.actorRef[FrontendMessage](1000, OverflowStrategy.fail)
   val responseSink = Sink.actorRef[BackendMessage](self, OnCompleted)
-  val processFlow = Flow.fromSinkAndSourceMat(Flow[ByteString].via(new PgPacketParser).map(backend.Decode.apply).to(responseSink), commandSource.map(_.encode))(Keep.right)
+  val processFlow = Flow.fromSinkAndSourceMat(Flow[ByteString].via(new PgPacketParser).map(logMessage("received")).map(backend.Decode.apply).to(responseSink), commandSource.map(_.encode).map(logMessage("sent")))(Keep.right)
   val commandListener = Tcp().outgoingConnection(remoteAddress = new InetSocketAddress("localhost", 5432), halfClose = false).joinMat(processFlow)(Keep.right).run()
   commandListener ! StartupMessage(database, user)
 
@@ -49,13 +49,7 @@ class TestActor extends Actor with LazyLogging {
       commandListener ! PasswordMessage(password)
     case AuthenticationMD5Password(salt) =>
       logger.info("Requested md5 auth")
-      val md = MessageDigest.getInstance("MD5")
-      md.update(password.getBytes())
-      md.update(user.getBytes())
-      md.update(toHex(md.digest()).getBytes())
-      md.update(salt)
-      val md5pass = "md5" + toHex(md.digest())
-      commandListener ! PasswordMessage(md5pass)
+      commandListener ! PasswordMessage(md5password(user, password, salt))
     case AuthenticationOk =>
       logger.info("Authentication succeeded")
     case OnCompleted =>
@@ -68,14 +62,48 @@ class TestActor extends Actor with LazyLogging {
       if (queries.isEmpty) {
         commandListener ! Terminate
         commandListener ! Success(())
-      } else commandListener ! Query(queries.dequeue())
+      } else {
+        //commandListener ! Query(queries.dequeue())
+        commandListener ! Parse("", queries.dequeue(), Nil)
+        commandListener ! Bind("", "", Nil, Nil, Nil)
+        commandListener ! Execute("", 0)
+        commandListener ! Sync
+        context.become(queryReceive, discardOld = false)
+      }
     case CommandComplete(_) =>
-      logger.info("Command complete")
+      logger.info("Command completed")
 
     case msg => logger.info(s"Received message: $msg")
   }
 
+  def queryReceive: Receive = {
+      case ParseComplete =>
+        logger.info("Parse completed")
+      case BindComplete =>
+        logger.info("Bind completed")
+      case CommandComplete(_) =>
+        logger.info("Command completed")
+        context.unbecome()
+      case DataRow(values) =>
+        logger.info("DataRow: " + values.map(_.map(b => new String(b.toArray))).mkString(","))
+      case msg => logger.info(s"Received message: $msg")
+  }
+
+  def md5password(user: String, password: String, salt: Array[Byte]): String = {
+    val md = MessageDigest.getInstance("MD5")
+    md.update(password.getBytes())
+    md.update(user.getBytes())
+    md.update(toHex(md.digest()).getBytes())
+    md.update(salt)
+    "md5" + toHex(md.digest())
+  }
+
   def toHex(bytes: Array[Byte]): String = bytes.map(b => "%02x".format(b & 0xFF)).mkString
+
+  def logMessage[T](kind: String)(msg: T):T = {
+    logger.trace(s"$kind message: " + msg.toString)
+    msg
+  }
 
 }
 
