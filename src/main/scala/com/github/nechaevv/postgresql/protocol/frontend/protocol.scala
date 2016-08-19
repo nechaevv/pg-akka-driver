@@ -9,6 +9,12 @@ sealed trait FrontendMessage {
   def encode: ByteString
 }
 
+abstract class SingletonMessage(packetType: Byte) extends FrontendMessage {
+  override def encode: ByteString = encodePacket(packetType, ByteString.empty)
+}
+abstract class StringMessage(packetType: Byte, payload: String) extends FrontendMessage {
+  override def encode: ByteString = encodePacket('p', ByteString.newBuilder.putNullTerminatedString(payload).result())
+}
 case class StartupMessage(database: String, user: String) extends FrontendMessage {
   override def encode: ByteString = {
     val bs = ByteString.newBuilder
@@ -20,23 +26,11 @@ case class StartupMessage(database: String, user: String) extends FrontendMessag
   }
 }
 
-case class PasswordMessage(password: String) extends FrontendMessage {
-  override def encode: ByteString = encodePacket('p', ByteString.newBuilder.putNullTerminatedString(password).result())
-}
-
-case class Query(query: String) extends FrontendMessage {
-  override def encode: ByteString = encodePacket('Q', ByteString.newBuilder.putNullTerminatedString(query).result())
-}
-
-case object Terminate extends FrontendMessage {
-  override def encode: ByteString = encodePacket('X', ByteString.empty)
-}
-case object Sync extends FrontendMessage {
-  override def encode: ByteString = encodePacket('S', ByteString.empty)
-}
-case object Flush extends FrontendMessage {
-  override def encode: ByteString = encodePacket('H', ByteString.empty)
-}
+case class PasswordMessage(password: String) extends StringMessage('p', password);
+case class Query(query: String) extends StringMessage('Q', query)
+case object Terminate extends SingletonMessage('X')
+case object Sync extends SingletonMessage('S')
+case object Flush extends SingletonMessage('H')
 
 case class Parse(preparedStatementName: String, query: String, parameterTypes: Seq[Int]) extends FrontendMessage {
   override def encode: ByteString = {
