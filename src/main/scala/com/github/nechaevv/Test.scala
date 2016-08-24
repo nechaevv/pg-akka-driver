@@ -64,9 +64,13 @@ class TestActor extends Actor with LazyLogging {
         commandListener ! Success(())
       } else {
         //commandListener ! Query(queries.dequeue())
+        logger.info("Parse")
         commandListener ! Parse("", queries.dequeue(), Nil)
+        logger.info("Bind")
         commandListener ! Bind("", "", Nil, Nil, Nil)
+        logger.info("Execute")
         commandListener ! Execute("", 0)
+        logger.info("Sync")
         commandListener ! Sync
         context.become(queryReceive, discardOld = false)
       }

@@ -1,5 +1,6 @@
 package com.github.nechaevv.postgresql.api
 
+import akka.stream.scaladsl.Sink
 import slick.collection.heterogeneous.HList
 
 /**
@@ -7,6 +8,6 @@ import slick.collection.heterogeneous.HList
   */
 case class Statement[I <: HList, O <: HList](sql: String)
 
-case class Command[I <: HList, O <: HList](statement: Statement[I, O], parameters: I)
+case class Command[I <: HList, O <: HList](statement: Statement[I, O], parameters: I, sink: Sink[DataRow[O], _])
 
 case class DataRow[T <: HList](value: T)
