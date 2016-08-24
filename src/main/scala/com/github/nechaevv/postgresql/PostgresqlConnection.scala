@@ -13,7 +13,7 @@ import akka.stream.actor.ActorPublisherMessage.Request
 import akka.stream.scaladsl.{Flow, Framing, Keep, Sink, Source, Tcp}
 import akka.util.ByteString
 import com.github.nechaevv.postgresql.protocol.backend.PgPacketParser
-import com.github.nechaevv.postgresql.protocol.frontend.FrontendMessage
+import com.github.nechaevv.postgresql.protocol.frontend.{FrontendMessage, StartupMessage}
 
 /**
   * Created by v.a.nechaev on 11.07.2016.
@@ -23,10 +23,14 @@ class PostgresqlConnection(address: InetSocketAddress, database: String, user: S
 
   startWith(Connecting, Uninitialized)
 
-  val source = Source.actorPublisher[FrontendMessage](Props(classOf[PgMessagePublisher], materializer))
-  val sink = Flow[ByteString].via(new PgPacketParser).to(Sink.actorRefWithAck(self, ListenerReady, AckPacket, ListenerCompleted))
-  val flow = Fl
-  val source = Tcp().outgoingConnection(remoteAddress = new InetSocketAddress("localhost", 5432), halfClose = false).joinMat(processFlow)(Keep.right)
+  val commandPublisher = {
+    val source = Source.actorPublisher[FrontendMessage](Props(classOf[PgMessagePublisher], materializer)).map(_.encode)
+    val sink = Flow[ByteString].via(new PgPacketParser).to(Sink.actorRefWithAck(self, ListenerReady, AckPacket, ListenerCompleted))
+    val flow = Flow.fromSinkAndSourceMat(sink, source)(Keep.right)
+    Tcp().outgoingConnection(remoteAddress = address, halfClose = false).joinMat(flow)(Keep.right).run()
+  }
+
+  commandPublisher ! StartupMessage(database, user)
 
   when(Connecting) {
     case Event(Connected(remote, local), Uninitialized) =>
@@ -49,12 +53,6 @@ class PgMessagePublisher(materializer: ActorMaterializer) extends Actor with Act
     case source: Source[FrontendMessage, _] =>
       val sink = Sink.actorRefWithAck(self, ListenerReady, AckPacket, ListenerCompleted)
       source.runWith(sink)
-  }
-}
-
-object PostgresqlConnection {
-  def connect(address: InetSocketAddress, database: String, user: String, password: String): ActorRef = {
-    val sink = 
   }
 }
 
