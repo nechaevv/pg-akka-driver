@@ -5,12 +5,12 @@ import java.security.MessageDigest
 
 import akka.NotUsed
 import akka.actor.{Actor, ActorRef, FSM, Props, Stash}
-import akka.io.Tcp.Connected
 import akka.stream.ActorMaterializer
 import akka.stream.actor.ActorPublisher
 import akka.stream.actor.ActorPublisherMessage.Request
 import akka.stream.scaladsl.{Flow, Keep, Sink, Source, Tcp}
 import akka.util.ByteString
+import com.github.nechaevv.postgresql.protocol.backend
 import com.github.nechaevv.postgresql.protocol.backend._
 import com.github.nechaevv.postgresql.protocol.frontend._
 import com.typesafe.scalalogging.LazyLogging
@@ -20,54 +20,59 @@ import com.typesafe.scalalogging.LazyLogging
   */
 class PostgresqlConnection(address: InetSocketAddress, database: String, user: String, password: String)(implicit mat: ActorMaterializer)
   extends Actor with FSM[ConnectionState, ConnectionProperties] with ActorPublisher[FrontendMessage] with LazyLogging {
+  private implicit val as = context.system
 
-  startWith(Connecting,
-    Uninitialized(commandSink = Sink.actorRefWithAck(self, ListenerReady, AckPacket, ListenerCompleted))
-  )
+  override def preStart(): Unit = {
+    super.preStart()
+    val commandSink = Sink.actorRefWithAck(self, ListenerReady, Ack, ListenerCompleted)
+    logger.trace("Starting TCP connection")
+    val source = Source.actorPublisher[FrontendMessage](Props(classOf[PgMessagePublisher], mat))
+      .map(_.encode)
+    val sink = Flow[ByteString].via(new PgPacketParser).map(backend.Decode.apply).to(commandSink)
+    val flow = Flow.fromSinkAndSourceMat(sink, source)(Keep.right)
+    val commandPublisher = Tcp().outgoingConnection(remoteAddress = address, halfClose = false)
+      .joinMat(flow)(Keep.right).run()
+    commandPublisher ! StartupMessage(database, user)
+    startWith(StartingUp, ConnectionContext(commandPublisher))
+  }
 
-  when(Initializing) {
-    case Event(ListenerReady, Uninitialized(commandSink)) =>
-      val source = Source.actorPublisher[FrontendMessage](Props(classOf[PgMessagePublisher], mat))
-        .map(_.encode)
-      val sink = Flow[ByteString].via(new PgPacketParser).to(commandSink)
-      val flow = Flow.fromSinkAndSourceMat(sink, source)(Keep.right)
-      val commandPublisher = Tcp().outgoingConnection(remoteAddress = address, halfClose = false)
-        .joinMat(flow)(Keep.right).run()
-      sender ! AckPacket
-      commandPublisher ! StartupMessage(database, user)
-      goto(Connecting) using ConnectionContext(commandPublisher)
-  }
-  when(Connecting) {
-    case Event(Connected(remote, local), ConnectionContext(commandPublisher)) =>
-      logger.trace(s"Connected to server $remote")
-      commandPublisher ! StartupMessage(database, user)
-      goto(StartingUp)
-  }
   when(StartingUp) {
+    case Event(ListenerReady, _) =>
+      sender ! Ack
+      stay()
     case Event(AuthenticationCleartextPassword, ConnectionContext(commandPublisher)) =>
       logger.info("Requested cleartext auth")
-      sender ! AckPacket
+      sender ! Ack
       commandPublisher ! PasswordMessage(password)
       goto(Authenticating)
     case Event(AuthenticationMD5Password(salt), ConnectionContext(commandPublisher)) =>
       logger.info("Requested md5 auth")
-      sender ! AckPacket
+      sender ! Ack
       commandPublisher ! PasswordMessage(md5password(user, password, salt))
       goto(Authenticating)
     case Event(AuthenticationOk, _) =>
       logger.info("Authentication succeeded")
-      sender ! AckPacket
+      sender ! Ack
       goto(Authenticated)
   }
   when(Authenticating) {
     case Event(AuthenticationOk, _) =>
       logger.info("Authentication succeeded")
-      sender ! AckPacket
+      sender ! Ack
       goto(Authenticated)
   }
   when(Authenticated) {
+    case Event(ParameterStatus(name, value), _) =>
+      logger.trace(s"Connection parameter $name=$value")
+      sender ! Ack
+      stay()
+    case Event(BackendKeyData(pid, key), _) =>
+      logger.trace(s"Backend key data $pid $key")
+      sender ! Ack
+      stay()
     case Event(ReadyForQuery(txStatus), _) =>
       logger.info(s"Ready for query (tx status $txStatus)")
+      sender ! Ack
       goto(Ready)
   }
   when(Ready) {
@@ -83,31 +88,38 @@ class PostgresqlConnection(address: InetSocketAddress, database: String, user: S
   when(Querying) {
     case Event(ParseComplete, _) =>
       logger.info("Parse completed")
-      sender ! AckPacket
+      sender ! Ack
       stay()
     case Event(BindComplete, _) =>
       logger.info("Bind completed")
-      sender ! AckPacket
+      sender ! Ack
       stay()
     case Event(dataRow: DataRow, QueryContext(_, queryListener)) =>
-      sender ! AckPacket
+      sender ! Ack
       queryListener ! dataRow
       stay()
-    case Event(CommandComplete, QueryContext(commandPublisher, queryListener)) =>
-      logger.info("Command completed")
-      sender ! AckPacket
+    case Event(CommandComplete(tag), QueryContext(commandPublisher, queryListener)) =>
+      logger.info(s"Command completed $tag")
+      sender ! Ack
       queryListener ! CommandComplete
+      stay()
+      //goto(Ready) using ConnectionContext(commandPublisher)
+    case Event(ReadyForQuery(txStatus), QueryContext(commandPublisher, queryListener)) =>
+      logger.info(s"Ready for query (tx status $txStatus)")
+      sender ! Ack
       goto(Ready) using ConnectionContext(commandPublisher)
   }
 
   whenUnhandled {
+    case Event(Ack, _) =>
+      stay()
     case Event(event, state) =>
       logger.error(s"Unhandled event $event")
       stop(FSM.Failure(new IllegalStateException()))
   }
 
   onTermination {
-    case StopEvent(_, ConnectionContext(commandPublisher), reason) =>
+    case StopEvent(_, _, ConnectionContext(commandPublisher)) =>
       logger.info("Connection terminated")
       commandPublisher ! Terminate
   }
@@ -129,17 +141,17 @@ class PgMessagePublisher(implicit mat: ActorMaterializer) extends Actor with Act
   override def receive: Receive = {
     case msg: FrontendMessage => if(totalDemand > 0) {
       onNext(msg)
-      sender ! AckPacket
+      sender ! Ack
     } else stash()
     case _: Request => unstashAll()
     case source: Source[FrontendMessage, _] =>
-      val sink = Sink.actorRefWithAck(self, ListenerReady, AckPacket, ListenerCompleted)
+      val sink = Sink.actorRefWithAck(self, ListenerReady, Ack, ListenerCompleted)
       source.runWith(sink)
   }
 }
 
 case object ListenerReady
-case object AckPacket
+case object Ack
 case object ListenerCompleted
 
 sealed trait ConnectionState
