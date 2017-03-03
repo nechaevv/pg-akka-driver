@@ -26,8 +26,7 @@ class PostgresqlConnection(address: InetSocketAddress, database: String, user: S
     super.preStart()
     val commandSink = Sink.actorRefWithAck(self, ListenerReady, Ack, ListenerCompleted)
     logger.trace("Starting TCP connection")
-    val source = Source.actorPublisher[FrontendMessage](Props(classOf[PgMessagePublisher], mat))
-      .map(_.encode)
+    val source = Source.actorPublisher[FrontendMessage](Props(classOf[PgMessagePublisher], mat)).map(_.encode)
     val sink = Flow[ByteString].via(new PgPacketParser).map(backend.Decode.apply).to(commandSink)
     val flow = Flow.fromSinkAndSourceMat(sink, source)(Keep.right)
     val commandPublisher = Tcp().outgoingConnection(remoteAddress = address, halfClose = false)
@@ -41,23 +40,23 @@ class PostgresqlConnection(address: InetSocketAddress, database: String, user: S
       sender ! Ack
       stay()
     case Event(AuthenticationCleartextPassword, ConnectionContext(commandPublisher)) =>
-      logger.info("Requested cleartext auth")
+      logger.trace("Requested cleartext auth")
       sender ! Ack
       commandPublisher ! PasswordMessage(password)
       goto(Authenticating)
     case Event(AuthenticationMD5Password(salt), ConnectionContext(commandPublisher)) =>
-      logger.info("Requested md5 auth")
+      logger.trace("Requested md5 auth")
       sender ! Ack
       commandPublisher ! PasswordMessage(md5password(user, password, salt))
       goto(Authenticating)
     case Event(AuthenticationOk, _) =>
-      logger.info("Authentication succeeded")
+      logger.trace("Authentication succeeded")
       sender ! Ack
       goto(Authenticated)
   }
   when(Authenticating) {
     case Event(AuthenticationOk, _) =>
-      logger.info("Authentication succeeded")
+      logger.trace("Authentication succeeded")
       sender ! Ack
       goto(Authenticated)
   }
@@ -71,7 +70,7 @@ class PostgresqlConnection(address: InetSocketAddress, database: String, user: S
       sender ! Ack
       stay()
     case Event(ReadyForQuery(txStatus), _) =>
-      logger.info(s"Ready for query (tx status $txStatus)")
+      logger.trace(s"Ready for query (tx status $txStatus)")
       sender ! Ack
       goto(Ready)
   }
@@ -87,11 +86,11 @@ class PostgresqlConnection(address: InetSocketAddress, database: String, user: S
   }
   when(Querying) {
     case Event(ParseComplete, _) =>
-      logger.info("Parse completed")
+      logger.trace("Parse completed")
       sender ! Ack
       stay()
     case Event(BindComplete, _) =>
-      logger.info("Bind completed")
+      logger.trace("Bind completed")
       sender ! Ack
       stay()
     case Event(dataRow: DataRow, QueryContext(_, queryListener)) =>
@@ -99,13 +98,13 @@ class PostgresqlConnection(address: InetSocketAddress, database: String, user: S
       queryListener ! dataRow
       stay()
     case Event(CommandComplete(tag), QueryContext(commandPublisher, queryListener)) =>
-      logger.info(s"Command completed $tag")
+      logger.trace(s"Command completed $tag")
       sender ! Ack
       queryListener ! CommandComplete
       stay()
       //goto(Ready) using ConnectionContext(commandPublisher)
     case Event(ReadyForQuery(txStatus), QueryContext(commandPublisher, queryListener)) =>
-      logger.info(s"Ready for query (tx status $txStatus)")
+      logger.trace(s"Ready for query (tx status $txStatus)")
       sender ! Ack
       goto(Ready) using ConnectionContext(commandPublisher)
   }
@@ -120,7 +119,7 @@ class PostgresqlConnection(address: InetSocketAddress, database: String, user: S
 
   onTermination {
     case StopEvent(_, _, ConnectionContext(commandPublisher)) =>
-      logger.info("Connection terminated")
+      logger.trace("Connection terminated")
       commandPublisher ! Terminate
   }
 
