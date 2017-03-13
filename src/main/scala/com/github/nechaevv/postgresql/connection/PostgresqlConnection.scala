@@ -18,6 +18,7 @@ import com.typesafe.scalalogging.LazyLogging
 /**
   * Created by v.a.nechaev on 11.07.2016.
   */
+/*
 class PostgresqlConnection(address: InetSocketAddress, database: String, user: String, password: String)(implicit mat: ActorMaterializer)
   extends Actor with FSM[ConnectionState, ConnectionProperties] with ActorPublisher[FrontendMessage] with LazyLogging {
   private implicit val as = context.system
@@ -75,7 +76,7 @@ class PostgresqlConnection(address: InetSocketAddress, database: String, user: S
       goto(Ready)
   }
   when(Ready) {
-    case Event(cmd: QueryCommand, ConnectionContext(commandPublisher)) =>
+    case Event(cmd: RawSqlCommand, ConnectionContext(commandPublisher)) =>
       logger.trace(s"Executing query ${cmd.sql}")
       val (oids, values) = cmd.parameters.unzip
       commandPublisher ! Parse("", cmd.sql, oids)
@@ -140,7 +141,7 @@ class PgMessagePublisher(implicit mat: ActorMaterializer) extends Actor with Act
   override def receive: Receive = {
     case msg: FrontendMessage => if(totalDemand > 0) {
       onNext(msg)
-      sender ! Ack
+      //sender ! Ack
     } else stash()
     case _: Request => unstashAll()
     case source: Source[FrontendMessage, _] =>
@@ -161,6 +162,7 @@ case object StartingUp extends ConnectionState
 case object Authenticating extends ConnectionState
 case object Authenticated extends ConnectionState
 case object Ready extends ConnectionState
+case object Parsing extends ConnectionState
 case object Querying extends ConnectionState
 
 sealed trait ConnectionProperties
@@ -169,4 +171,7 @@ case class Uninitialized(commandSink: Sink[Packet, NotUsed]) extends ConnectionP
 case class ConnectionContext(commandPublisher: ActorRef) extends ConnectionProperties
 case class QueryContext(commandPublisher: ActorRef, queryListener: ActorRef) extends ConnectionProperties
 
-case class QueryCommand(sql: String, parameters: Seq[(Int, Option[ByteString])], resultColumnCount: Int)
+case class RawSqlCommand(sql: String, parameters: Seq[(Int, Option[ByteString])], resultColumnCount: Int)
+
+case class PreparedStatementDescriptor(name: String, columnTypes: Seq[Int])
+*/
