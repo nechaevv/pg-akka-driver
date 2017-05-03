@@ -1,14 +1,14 @@
 package com.github.nechaevv.postgresql.protocol.backend
 
-import akka.stream.scaladsl.Framing.FramingException
 import akka.stream.stage.{GraphStage, GraphStageLogic, InHandler, OutHandler}
 import akka.stream.{Attributes, FlowShape, Inlet, Outlet}
 import akka.util.ByteString
+import com.typesafe.scalalogging.LazyLogging
 
 /**
   * Created by v.a.nechaev on 14.07.2016.
   */
-class PgPacketParser extends GraphStage[FlowShape[ByteString, Packet]] {
+class PgPacketParser extends GraphStage[FlowShape[ByteString, Packet]] with LazyLogging {
   val in = Inlet[ByteString]("PgPackerParserStage.in")
   val out = Outlet[Packet]("PgPackerParserStage.out")
 
@@ -16,28 +16,36 @@ class PgPacketParser extends GraphStage[FlowShape[ByteString, Packet]] {
   override def toString: String = "PgPacketParser"
   val packetHeaderLength = 4
 
-  override def createLogic(inheritedAttributes: Attributes): GraphStageLogic = new GraphStageLogic(shape) with InHandler with OutHandler {
+  override def createLogic(inheritedAttributes: Attributes): GraphStageLogic = new GraphStageLogic(shape)
+    with InHandler with OutHandler {
     var currentPacket: Option[Packet] = None
     var packetLength = 0
     var buffer: ByteString = ByteString.empty
 
     override def onPush(): Unit = {
+      logger.trace("in push")
       buffer ++= grab(in)
       doParse()
       pushPacketIfAvailable()
     }
 
-    override def onPull(): Unit = pushPacketIfAvailable()
+    override def onPull(): Unit = {
+      logger.trace("out pull")
+      pushPacketIfAvailable()
+    }
 
     private def packetReady = currentPacket filter { packet => packetLength == packet.payload.length }
 
     private def pushPacketIfAvailable(): Unit = if (isAvailable(out)) packetReady match {
       case Some(packet) =>
+        logger.trace(s"Packet: $packet")
         push(out, packet)
         currentPacket = None
-        doParse()
+        if (buffer.nonEmpty) doParse()
         if (isClosed(in) && currentPacket.isEmpty) completeStage()
-      case None => tryPull()
+      case None =>
+        logger.trace("Pulling data")
+        tryPull(in)
     }
 
     override def onUpstreamFinish(): Unit = {
@@ -63,10 +71,10 @@ class PgPacketParser extends GraphStage[FlowShape[ByteString, Packet]] {
       }
     }
 
-    private def tryPull() = {
+    /*private def tryPull() = {
       if (isClosed(in)) completeStage()
       else pull(in)
-    }
+    }*/
 
     setHandlers(in, out, this)
 
