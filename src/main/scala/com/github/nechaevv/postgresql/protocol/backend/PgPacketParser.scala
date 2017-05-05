@@ -23,14 +23,12 @@ class PgPacketParser extends GraphStage[FlowShape[ByteString, Packet]] with Lazy
     var buffer: ByteString = ByteString.empty
 
     override def onPush(): Unit = {
-      logger.trace("in push")
       buffer ++= grab(in)
       doParse()
       pushPacketIfAvailable()
     }
 
     override def onPull(): Unit = {
-      logger.trace("out pull")
       pushPacketIfAvailable()
     }
 
@@ -38,14 +36,14 @@ class PgPacketParser extends GraphStage[FlowShape[ByteString, Packet]] with Lazy
 
     private def pushPacketIfAvailable(): Unit = if (isAvailable(out)) packetReady match {
       case Some(packet) =>
-        logger.trace(s"Packet: $packet")
+        //logger.trace(s"Packet: $packet, remaining buffer ${buffer.size} bytes")
         push(out, packet)
         currentPacket = None
         if (buffer.nonEmpty) doParse()
         if (isClosed(in) && currentPacket.isEmpty) completeStage()
       case None =>
-        logger.trace("Pulling data")
-        tryPull(in)
+        //logger.trace("Pulling data")
+        pull(in)
     }
 
     override def onUpstreamFinish(): Unit = {
@@ -55,10 +53,12 @@ class PgPacketParser extends GraphStage[FlowShape[ByteString, Packet]] with Lazy
 
     private def doParse(): Unit = currentPacket match {
       case Some(packet) =>
+        //logger.trace("Appending current packet")
         val (payload, leftover) = buffer splitAt (packetLength - packet.payload.length)
         currentPacket = Some(packet.copy(payload = packet.payload ++ payload))
         buffer = leftover
       case None => if (buffer.length >= packetHeaderLength + 1) {
+        //logger.trace("Parsing new packet")
         val iter = buffer.iterator
         val packetType = iter.getByte
         packetLength = iter.getInt - packetHeaderLength

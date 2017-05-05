@@ -16,10 +16,10 @@ class ConnectionStage(database: String, username: String, password: String)
   extends GraphStage[BidiShape[SqlCommand, FrontendMessage, BackendMessage, CommandResult]]
   with LazyLogging {
 
-  val commandIn = Inlet[SqlCommand]("PgConnection.commandIn")
-  val pgOut = Outlet[FrontendMessage]("PgConnection.pgOut")
-  val pgIn = Inlet[BackendMessage]("PgConnection.pgIn")
-  val resultOut = Outlet[CommandResult]("PgConnection.resultOut")
+  val commandIn = Inlet[SqlCommand]("ConnectionStage.api.in")
+  val resultOut = Outlet[CommandResult]("Connection.command.Out")
+  val pgIn = Inlet[BackendMessage]("ConnectionStage.db.in")
+  val pgOut = Outlet[FrontendMessage]("ConnectionStage.db.out")
 
   override def createLogic(inheritedAttributes: Attributes): GraphStageLogic = new GraphStageLogic(shape) {
 
@@ -59,9 +59,7 @@ class ConnectionStage(database: String, username: String, password: String)
             case ReadyForQuery(txStatus) =>
               logger.info(s"Connection ready (tx $txStatus)")
               state = ReadyForCommand
-              pull(commandIn)
-              //pull(pgIn)
-              //push(pgOut, Query("SELECT * FROM \"TEST\""))
+              pullCommand()
             case msg =>
               logUnknownMessage(msg)
               pull(pgIn)
@@ -136,7 +134,7 @@ class ConnectionStage(database: String, username: String, password: String)
             case CommandComplete(_) =>
               logger.trace("SQL command completed")
               push(resultOut, CommandCompleted)
-              pull(commandIn)
+              pullCommand()
               state = ReadyForCommand
             case msg =>
               logUnknownMessage(msg)
@@ -162,16 +160,22 @@ class ConnectionStage(database: String, username: String, password: String)
       state = Queued(List(Sync), Binding(columnTypes))
     }
 
+    def pullCommand(): Unit = {
+      if (isClosed(commandIn)) {
+        disconnect()
+        completeStage()
+      } else pull(commandIn)
+    }
+
     def logUnknownMessage(msg: Any) = logger.error(s"Unexpected message $msg for state $state")
 
     setHandler(commandIn, new InHandler {
       override def onPush(): Unit = {
-        logger.trace("command.in push")
         handleEvent()
       }
       override def onUpstreamFinish(): Unit = {
-        disconnect()
-        completeStage()
+        //disconnect()
+        //completeStage()
       }
       override def onUpstreamFailure(ex: Throwable): Unit = {
         disconnect()
@@ -181,14 +185,12 @@ class ConnectionStage(database: String, username: String, password: String)
 
     setHandler(pgOut, new OutHandler {
       override def onPull(): Unit = {
-        logger.trace("pg.out pull")
         handleEvent()
       }
       override def onDownstreamFinish(): Unit = completeStage()
     })
     setHandler(pgIn, new InHandler {
       override def onPush(): Unit = {
-        logger.trace("pg.in push")
         handleEvent()
       }
       override def onUpstreamFinish(): Unit = {
@@ -202,13 +204,13 @@ class ConnectionStage(database: String, username: String, password: String)
     })
     setHandler(resultOut, new OutHandler {
       override def onPull(): Unit = {
-        logger.trace("command.out pull")
         handleEvent()
       }
       override def onDownstreamFinish(): Unit = completeStage()
     })
 
     def disconnect(): Unit = {
+      logger.trace("Terminating connection")
       if (isAvailable(pgOut)) push(pgOut, Terminate)
     }
 
