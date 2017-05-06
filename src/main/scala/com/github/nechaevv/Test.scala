@@ -8,10 +8,15 @@ import akka.stream.stage.{GraphStage, GraphStageLogic, InHandler, OutHandler}
 import akka.stream._
 import akka.util.ByteString
 import com.github.nechaevv.postgresql.connection._
+import com.github.nechaevv.postgresql.marshal.Unmarshaller
 import com.github.nechaevv.postgresql.protocol.backend.{Decode, Packet, PgPacketParser}
 import com.github.nechaevv.postgresql.protocol.frontend.FrontendMessage
 import com.github.nechaevv.stream.TcpConnectionFlow
 import com.typesafe.scalalogging.LazyLogging
+import slick.collection.heterogeneous.HList
+import slick.collection.heterogeneous.syntax._
+
+import scala.util.control.NonFatal
 
 /**
   * Created by v.a.nechaev on 07.07.2016.
@@ -23,10 +28,10 @@ object Test extends App with LazyLogging {
 
   import akka.stream.scaladsl.GraphDSL.Implicits._
 
-  val testCommand = Statement("SELECT * FROM pg_database", Nil)
+  val testCommand = Statement("SELECT datname, encoding, datistemplate, datconnlimit FROM pg_database", Nil)
   //val testCommand = SimpleQuery("SELECT * FROM pg_database")
   val testFlow = Flow.fromSinkAndSourceMat(
-    Sink.seq[CommandResult],
+    Sink.seq[HList],
     Source.single(testCommand)
   )(Keep.left)
 
@@ -44,16 +49,28 @@ object Test extends App with LazyLogging {
       remoteAddress = address, halfClose = false))//.buffer(10, OverflowStrategy.backpressure))
     //val dbConnection = builder.add(new TcpConnectionFlow(address))
 
-
     //msgLog ~> encode ~> outLog ~> dbConnection ~> inLog ~> packetParser ~> decode
     encode ~> dbConnection ~> packetParser ~> decode
 
     FlowShape(encode.in, decode.out)
   })
 
+  import com.github.nechaevv.postgresql.marshal.DefaultMarshallers._
+
+  val unmarshaller = implicitly[Unmarshaller[String :: Int :: Boolean :: Int :: HNil]]
+
+  val unmarshalFlow = Flow[CommandResult].collect({
+    case ResultRow(values) => unmarshaller(values)
+  })
+
   logger.info("Running")
-  val result = testFlow.joinMat(new ConnectionStage("postgres","postgres",""))(Keep.left)
+  val result = unmarshalFlow.viaMat(testFlow)(Keep.right).joinMat(new ConnectionStage("postgres","postgres",""))(Keep.left)
     .joinMat(pgMessageFlow)(Keep.left).run()
+    .recover({
+      case NonFatal(ex) =>
+        logger.error("Query failed", ex)
+        Nil
+    })
 
   result foreach {res =>
     res foreach { cr =>
