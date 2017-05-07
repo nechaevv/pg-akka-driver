@@ -16,8 +16,8 @@ class ConnectionStage(database: String, username: String, password: String)
   extends GraphStage[BidiShape[SqlCommand, FrontendMessage, BackendMessage, CommandResult]]
   with LazyLogging {
 
-  val commandIn = Inlet[SqlCommand]("ConnectionStage.api.in")
-  val resultOut = Outlet[CommandResult]("Connection.command.Out")
+  val commandIn = Inlet[SqlCommand]("ConnectionStage.command.in")
+  val resultOut = Outlet[CommandResult]("ConnectionStage.command.Out")
   val pgIn = Inlet[BackendMessage]("ConnectionStage.db.in")
   val pgOut = Outlet[FrontendMessage]("ConnectionStage.db.out")
 
