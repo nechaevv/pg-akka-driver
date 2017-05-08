@@ -20,12 +20,16 @@ class PooledFlowStage[T, R](poolFactory: () => PubSub[T, R], onRelease: PubSub[T
     var subscriber: Option[Subscriber[_ >: T]] = None
     var subscription: Option[Subscription] = None
 
+    val setSubscriber = getAsyncCallback[Subscriber[_ >: T]](subs => subscriber = Some(subs))
+    val setSubscription = getAsyncCallback[Subscription](subs => subscription = Some(subs))
+    val pushNext = getAsyncCallback[R](t => push(out, t))
+
     private lazy val downstream = {
       val ds = poolFactory()
       val poolConnector = new Processor[R, T] {
         //Producer
         override def subscribe(s: Subscriber[_ >: T]): Unit = {
-          subscriber = Some(s)
+          setSubscriber.invoke(s)
           if (isAvailable(in)) s.onNext(grab(in))
         }
         //Consumer
@@ -36,9 +40,9 @@ class PooledFlowStage[T, R](poolFactory: () => PubSub[T, R], onRelease: PubSub[T
         override def onComplete(): Unit = {
           subscription.get.cancel()
         }
-        override def onNext(t: R): Unit = push(out, t)
+        override def onNext(t: R): Unit = pushNext.invoke(t)
         override def onSubscribe(s: Subscription): Unit = {
-          subscription = Some(s)
+          setSubscription.invoke(s)
           if (isAvailable(out)) s.request(1)
         }
       }
