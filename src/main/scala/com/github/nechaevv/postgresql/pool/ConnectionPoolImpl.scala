@@ -25,13 +25,8 @@ class ConnectionPoolImpl(address: InetSocketAddress, database: String, user: Str
   val freeConnections: AtomicReference[List[ConnectionHandle]] = new AtomicReference[List[ConnectionHandle]](Nil)
 
   override def run(cmd: SqlCommand): Source[ResultRow, NotUsed] = Source.single(cmd).via({
-//    val proc = new PooledProcessor[SqlCommand, CommandResult](
-//      poolFactory = getFreeConnection,
-//      conn => freeConnections.updateAndGet(conns => conn :: conns)
-//    )
-//    Flow.fromSinkAndSource(Sink.fromSubscriber(proc), Source.fromPublisher(proc))
     new PooledFlowStage[SqlCommand, CommandResult](getFreeConnection, conn => freeConnections.updateAndGet(conns => conn :: conns))
-  }).takeWhile(cr => cr != CommandCompleted).collect({
+  }).takeWhile(cr => cr != CommandCompleted, inclusive = false).collect({
     case rr: ResultRow => rr
   })
 
@@ -55,11 +50,11 @@ class ConnectionPoolImpl(address: InetSocketAddress, database: String, user: Str
     promise.future
   }
 
-  private val connectionGraph = {
+  private def connectionGraph = {
     import akka.stream.scaladsl.GraphDSL.Implicits._
 
     val connectionHandleFlow = Flow.fromSinkAndSourceMat(
-      Sink.asPublisher[CommandResult](false),
+      Sink.asPublisher[CommandResult](fanout = true),
       Source.asSubscriber[SqlCommand]
     )(Keep.both)
 
