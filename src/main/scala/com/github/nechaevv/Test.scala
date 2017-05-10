@@ -47,7 +47,6 @@ object Test extends App with LazyLogging {
     result <- pool.run(testCommand).map(rr => unmarshaller(rr.data)).runWith(Sink.seq[HList])
     .map(_ foreach { cr =>
       logger.info(s"Result: $cr")
-      TimeUnit.SECONDS.sleep(3)
     })
     result2 <- pool.run(testCommand2).map(rr => unmarshaller(rr.data)).runWith(Sink.seq[HList])
     .map(_  foreach { cr =>

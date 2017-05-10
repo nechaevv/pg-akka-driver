@@ -8,7 +8,7 @@ import org.reactivestreams.{Processor, Subscriber, Subscription}
 /**
   * Created by CONVPN on 5/7/2017.
   */
-class PooledFlowStage[T, R](poolFactory: () => PubSub[T, R], onRelease: PubSub[T, R] => Unit)
+class UpstreamEndpointStage[T, R](poolFactory: () => Processor[T, R], onRelease: Processor[T, R] => Unit)
   extends GraphStage[FlowShape[T, R]] with LazyLogging {
 
   val in = Inlet[T]("PooledFlowShape.in")
@@ -19,6 +19,7 @@ class PooledFlowStage[T, R](poolFactory: () => PubSub[T, R], onRelease: PubSub[T
   override def createLogic(inheritedAttributes: Attributes): GraphStageLogic = new GraphStageLogic(shape) {
     var subscriber: Option[Subscriber[_ >: T]] = None
     var subscription: Option[Subscription] = None
+    var downstream: Option[Processor[T,R]] = None
     var requestedItems: Long = 0
 
     val setSubscriber = getAsyncCallback[Option[Subscriber[_ >: T]]] { subs =>
@@ -33,8 +34,11 @@ class PooledFlowStage[T, R](poolFactory: () => PubSub[T, R], onRelease: PubSub[T
     val pushNext = getAsyncCallback[R](t => push(out, t))
     val pullNext = getAsyncCallback[Long] { n =>
       logger.trace(s"Requested $n items from upstream")
-      requestedItems += n - 1
-      pull(in)
+      requestedItems += n
+      if (!hasBeenPulled(in)) {
+        pull(in)
+        requestedItems -= 1
+      }
     }
     val onDownstreamComplete = getAsyncCallback[Unit](_ => completeStage())
     val onDownstreamError = getAsyncCallback[Throwable](ex => failStage(ex))
@@ -47,7 +51,7 @@ class PooledFlowStage[T, R](poolFactory: () => PubSub[T, R], onRelease: PubSub[T
       subscriber foreach { s =>
         s.onNext(grab(in))
         if (requestedItems > 0) {
-          requestedItems = requestedItems - 1
+          requestedItems -= 1
           pull(in)
         }
       }
@@ -57,7 +61,7 @@ class PooledFlowStage[T, R](poolFactory: () => PubSub[T, R], onRelease: PubSub[T
       if (isAvailable(out)) subscription.foreach(_.request(1))
     }
 
-    private lazy val downstream = {
+    val runDownstream = getAsyncCallback[Unit] { _ => if (downstream.isEmpty) {
       logger.trace("Acquiring connection from pool")
       val ds = poolFactory()
       val poolConnector = new Processor[R, T] {
@@ -93,15 +97,17 @@ class PooledFlowStage[T, R](poolFactory: () => PubSub[T, R], onRelease: PubSub[T
           setSubscription.invoke(Some(s))
         }
       }
-      ds.pub.subscribe(poolConnector)
-      poolConnector.subscribe(ds.sub)
-      ds
-    }
+      ds.subscribe(poolConnector)
+      poolConnector.subscribe(ds)
+      downstream = Some(ds)
+    } }
+
+    def releaseDownstream(): Unit = onRelease(downstream.getOrElse(throw new IllegalStateException("Downstream is not started")))
 
     setHandlers(in, out, new InHandler with OutHandler {
       override def onPush(): Unit = {
         logger.trace("Push from upstream")
-        downstream
+        runDownstream.invoke()
         tryPushToDownstream()
       }
       override def onUpstreamFinish(): Unit = {
@@ -114,22 +120,21 @@ class PooledFlowStage[T, R](poolFactory: () => PubSub[T, R], onRelease: PubSub[T
         logger.error("Upstream failure", ex)
         subscription.foreach(_.cancel())
         failStage(ex)
-        onRelease(downstream)
+        releaseDownstream()
       }
 
       override def onPull(): Unit = {
         logger.trace("Pull from upstream")
-        downstream
+        runDownstream.invoke()
         tryPullFromDownstream()
       }
       override def onDownstreamFinish(): Unit = {
         logger.trace("Upstream sink completed")
         subscription.foreach(_.cancel())
         completeStage()
-        onRelease(downstream)
+        releaseDownstream()
       }
     })
-
 
   }
 
