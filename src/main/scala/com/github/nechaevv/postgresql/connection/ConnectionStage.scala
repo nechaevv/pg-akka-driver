@@ -27,8 +27,8 @@ class ConnectionStage(database: String, username: String, password: String)
     var preparedStatements: Map[String, (UUID, Seq[Int], Seq[Int])] = Map.empty
 
     private def handleEvent(): Unit = {
-      logger.trace(s"Event: state $state commandIn: ${isAvailable(commandIn)}, pgOut: ${isAvailable(pgOut)}, " +
-        s"pgIn: ${isAvailable(pgIn)}, cmdOut: ${isAvailable(resultOut)}")
+      //logger.trace(s"Event: state $state commandIn: ${isAvailable(commandIn)}, pgOut: ${isAvailable(pgOut)}, " +
+      //  s"pgIn: ${isAvailable(pgIn)}, cmdOut: ${isAvailable(resultOut)}")
       state match {
         case Initializing => if (isAvailable(pgOut)) {
           logger.trace("Connecting")
@@ -216,7 +216,7 @@ class ConnectionStage(database: String, username: String, password: String)
 
     setHandler(commandIn, new InHandler {
       override def onPush(): Unit = {
-        logger.trace("cmd.in push")
+        //logger.trace("cmd.in push")
         handleEvent()
       }
       override def onUpstreamFinish(): Unit = {
@@ -233,14 +233,14 @@ class ConnectionStage(database: String, username: String, password: String)
 
     setHandler(pgOut, new OutHandler {
       override def onPull(): Unit = {
-        logger.trace("pg.out pull")
+        //logger.trace("pg.out pull")
         handleEvent()
       }
       override def onDownstreamFinish(): Unit = completeStage()
     })
     setHandler(pgIn, new InHandler {
       override def onPush(): Unit = {
-        logger.trace("pg.in push")
+        //logger.trace("pg.in push")
         handleEvent()
       }
       override def onUpstreamFinish(): Unit = {
@@ -254,7 +254,7 @@ class ConnectionStage(database: String, username: String, password: String)
     })
     setHandler(resultOut, new OutHandler {
       override def onPull(): Unit = {
-        logger.trace("result.out pull")
+        //logger.trace("result.out pull")
         handleEvent()
       }
       override def onDownstreamFinish(): Unit = completeStage()

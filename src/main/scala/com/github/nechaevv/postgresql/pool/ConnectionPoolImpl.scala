@@ -8,10 +8,12 @@ import akka.actor.ActorSystem
 import akka.stream.{FlowShape, Materializer}
 import akka.stream.scaladsl.{Flow, GraphDSL, Keep, Sink, Source, Tcp}
 import com.github.nechaevv.postgresql.connection._
+import com.github.nechaevv.postgresql.marshal.Unmarshaller
 import com.github.nechaevv.postgresql.protocol.backend.{Decode, Packet, PgPacketParser}
 import com.github.nechaevv.postgresql.protocol.frontend.FrontendMessage
 import com.typesafe.scalalogging.LazyLogging
 import org.reactivestreams.{Processor, Publisher, Subscriber, Subscription}
+import slick.collection.heterogeneous.HList
 
 import scala.concurrent.{ExecutionContext, Future, Promise}
 
@@ -24,10 +26,10 @@ class ConnectionPoolImpl(address: InetSocketAddress, database: String, user: Str
   type ConnectionHandle = Processor[SqlCommand, CommandResult]
   val freeConnections: AtomicReference[List[ConnectionHandle]] = new AtomicReference[List[ConnectionHandle]](Nil)
 
-  override def run(cmd: SqlCommand): Source[ResultRow, NotUsed] = Source.single(cmd).via({
-    new UpstreamEndpointStage[SqlCommand, CommandResult](getFreeConnection, conn => freeConnections.updateAndGet(conns => conn :: conns))
+  override def run[T <: HList](cmd: SqlCommand)(implicit um: Unmarshaller[T]): Source[T, NotUsed] = Source.single(cmd).via({
+    new UpstreamEndpointStage[SqlCommand, CommandResult](() => getFreeConnection(), conn => freeConnections.updateAndGet(conns => conn :: conns))
   }).takeWhile(cr => cr.isInstanceOf[ResultRow], inclusive = true).collect({
-    case rr: ResultRow => rr
+    case ResultRow(rr) => um(rr)
     case CommandFailed(code, message, detail) => {
       logger.error(message)
       throw new RuntimeException(s"Query failed: $code - $message")
@@ -41,11 +43,11 @@ class ConnectionPoolImpl(address: InetSocketAddress, database: String, user: Str
     handle.subscribe(new Subscriber[CommandResult] {
       override def onError(t: Throwable): Unit = {
         logger.error("Connection stop failure", t)
-        promise.success()
+        promise.success(())
       }
       override def onComplete(): Unit = {
         logger.trace("Connection stopped")
-        promise.success()
+        promise.success(())
       }
       override def onNext(t: CommandResult): Unit = ()
       override def onSubscribe(s: Subscription): Unit = ()

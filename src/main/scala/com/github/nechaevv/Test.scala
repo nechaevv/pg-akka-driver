@@ -38,17 +38,15 @@ object Test extends App with LazyLogging {
   //val testCommand = SimpleQuery("SELECT * FROM pg_database")
 
   import com.github.nechaevv.postgresql.marshal.DefaultMarshallers._
-
-  val unmarshaller = implicitly[Unmarshaller[String :: Int :: Boolean :: Int :: HNil]]
   logger.info("Running")
 
   val pool = new ConnectionPoolImpl(address, database, user, password, 1, 10)
   (for {
-    result <- pool.run(testCommand).map(rr => unmarshaller(rr.data)).runWith(Sink.seq[HList])
+    result <- pool.run[String :: Int :: Boolean :: Int :: HNil](testCommand).runWith(Sink.seq[HList])
     .map(_ foreach { cr =>
       logger.info(s"Result: $cr")
     })
-    result2 <- pool.run(testCommand2).map(rr => unmarshaller(rr.data)).runWith(Sink.seq[HList])
+    result2 <- pool.run[String :: Int :: Boolean :: Int :: HNil](testCommand2).runWith(Sink.seq[HList])
     .map(_  foreach { cr =>
       logger.info(s"Result2: $cr")
     })

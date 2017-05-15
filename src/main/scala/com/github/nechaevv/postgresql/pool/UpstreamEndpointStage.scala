@@ -90,12 +90,12 @@ class UpstreamEndpointStage[T, R](poolFactory: () => Future[Processor[T, R]], on
         override def onError(t: Throwable): Unit = {
           logger.error("Downstream error", t)
           onDownstreamError.invoke(t)
-          detachDownstream.invoke()
+          detachDownstream.invoke(())
         }
         override def onComplete(): Unit = {
           logger.trace("Downstream completed")
-          onDownstreamComplete.invoke()
-          detachDownstream.invoke()
+          onDownstreamComplete.invoke(())
+          detachDownstream.invoke(())
         }
         override def onNext(t: R): Unit = {
           pushNext.invoke(t)
