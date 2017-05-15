@@ -5,10 +5,12 @@ import akka.stream.stage.{GraphStage, GraphStageLogic, InHandler, OutHandler}
 import com.typesafe.scalalogging.LazyLogging
 import org.reactivestreams.{Processor, Subscriber, Subscription}
 
+import scala.concurrent.Future
+
 /**
   * Created by CONVPN on 5/7/2017.
   */
-class UpstreamEndpointStage[T, R](poolFactory: () => Processor[T, R], onRelease: Processor[T, R] => Unit)
+class UpstreamEndpointStage[T, R](poolFactory: () => Future[Processor[T, R]], onRelease: Processor[T, R] => Unit)
   extends GraphStage[FlowShape[T, R]] with LazyLogging {
 
   val in = Inlet[T]("PooledFlowShape.in")
@@ -30,12 +32,15 @@ class UpstreamEndpointStage[T, R](poolFactory: () => Processor[T, R], onRelease:
       subscription = subs
       tryPullFromDownstream()
     }
+    val setDownstream = getAsyncCallback[Option[Processor[T,R]]] { ds =>
+      downstream = ds
+    }
 
     val pushNext = getAsyncCallback[R](t => push(out, t))
     val pullNext = getAsyncCallback[Long] { n =>
       logger.trace(s"Requested $n items from upstream")
       requestedItems += n
-      if (!hasBeenPulled(in)) {
+      if (!isClosed(in) && !hasBeenPulled(in)) {
         pull(in)
         requestedItems -= 1
       }
@@ -57,13 +62,16 @@ class UpstreamEndpointStage[T, R](poolFactory: () => Processor[T, R], onRelease:
       }
     }
 
+    override def preStart(): Unit = {
+      runDownstream()
+    }
+
     def tryPullFromDownstream(): Unit = {
       if (isAvailable(out)) subscription.foreach(_.request(1))
     }
 
-    val runDownstream = getAsyncCallback[Unit] { _ => if (downstream.isEmpty) {
+    def runDownstream(): Unit = {
       logger.trace("Acquiring connection from pool")
-      val ds = poolFactory()
       val poolConnector = new Processor[R, T] {
         //Producer
         override def subscribe(s: Subscriber[_ >: T]): Unit = {
@@ -97,17 +105,20 @@ class UpstreamEndpointStage[T, R](poolFactory: () => Processor[T, R], onRelease:
           setSubscription.invoke(Some(s))
         }
       }
-      ds.subscribe(poolConnector)
-      poolConnector.subscribe(ds)
-      downstream = Some(ds)
-    } }
+      implicit val ec = materializer.executionContext
+      poolFactory() foreach { ds =>
+        setDownstream.invoke(Some(ds))
+        ds.subscribe(poolConnector)
+        poolConnector.subscribe(ds)
+      }
+    }
 
     def releaseDownstream(): Unit = onRelease(downstream.getOrElse(throw new IllegalStateException("Downstream is not started")))
 
     setHandlers(in, out, new InHandler with OutHandler {
       override def onPush(): Unit = {
         logger.trace("Push from upstream")
-        runDownstream.invoke()
+        //runDownstream.invoke()
         tryPushToDownstream()
       }
       override def onUpstreamFinish(): Unit = {
@@ -125,7 +136,7 @@ class UpstreamEndpointStage[T, R](poolFactory: () => Processor[T, R], onRelease:
 
       override def onPull(): Unit = {
         logger.trace("Pull from upstream")
-        runDownstream.invoke()
+        //runDownstream.invoke()
         tryPullFromDownstream()
       }
       override def onDownstreamFinish(): Unit = {

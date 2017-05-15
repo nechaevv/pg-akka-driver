@@ -33,8 +33,8 @@ object Test extends App with LazyLogging {
   val user = "postgres"
   val password = "postgres"
 
-  val testCommand = Statement("SELECT datname, encoding, datistemplate, datconnlimit FROM pg_database", Nil)
-  val testCommand2 = Statement("SELECT datname, encoding, datistemplate, datconnlimit FROM pg_database", Nil)
+  val testCommand = Statement("SELECT datname, encoding, datistemplate, datconnlimit FROM pg_database", 4, Nil)
+  val testCommand2 = Statement("SELECT datname, encoding, datistemplate, datconnlimit FROM pg_database", 4, Nil)
   //val testCommand = SimpleQuery("SELECT * FROM pg_database")
 
   import com.github.nechaevv.postgresql.marshal.DefaultMarshallers._
@@ -42,7 +42,7 @@ object Test extends App with LazyLogging {
   val unmarshaller = implicitly[Unmarshaller[String :: Int :: Boolean :: Int :: HNil]]
   logger.info("Running")
 
-  val pool = new ConnectionPoolImpl(address, database, user, password, 10)
+  val pool = new ConnectionPoolImpl(address, database, user, password, 1, 10)
   (for {
     result <- pool.run(testCommand).map(rr => unmarshaller(rr.data)).runWith(Sink.seq[HList])
     .map(_ foreach { cr =>

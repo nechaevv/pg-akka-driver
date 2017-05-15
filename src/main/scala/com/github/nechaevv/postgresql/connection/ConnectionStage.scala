@@ -5,7 +5,7 @@ import java.util.UUID
 
 import akka.stream._
 import akka.stream.stage.{GraphStage, GraphStageLogic, InHandler, OutHandler}
-import com.github.nechaevv.postgresql.protocol.backend.{AuthenticationCleartextPassword, AuthenticationMD5Password, AuthenticationOk, BackendKeyData, BackendMessage, BindComplete, CommandComplete, DataRow, ParameterDescription, ParameterStatus, ParseComplete, ReadyForQuery, RowDescription}
+import com.github.nechaevv.postgresql.protocol.backend.{AuthenticationCleartextPassword, AuthenticationMD5Password, AuthenticationOk, BackendKeyData, BackendMessage, BindComplete, CommandComplete, DataRow, ErrorMessage, ParameterDescription, ParameterStatus, ParseComplete, ReadyForQuery, RowDescription}
 import com.github.nechaevv.postgresql.protocol.frontend.{Bind, DescribeStatement, Execute, FrontendMessage, Parse, PasswordMessage, Query, StartupMessage, Sync, Terminate}
 import com.typesafe.scalalogging.LazyLogging
 
@@ -27,8 +27,8 @@ class ConnectionStage(database: String, username: String, password: String)
     var preparedStatements: Map[String, (UUID, Seq[Int], Seq[Int])] = Map.empty
 
     private def handleEvent(): Unit = {
-      //logger.trace(s"Event: state $state commandIn: ${isAvailable(commandIn)}, pgOut: ${isAvailable(pgOut)}, " +
-      //  s"pgIn: ${isAvailable(pgIn)}, cmdOut: ${isAvailable(resultOut)}")
+      logger.trace(s"Event: state $state commandIn: ${isAvailable(commandIn)}, pgOut: ${isAvailable(pgOut)}, " +
+        s"pgIn: ${isAvailable(pgIn)}, cmdOut: ${isAvailable(resultOut)}")
       state match {
         case Initializing => if (isAvailable(pgOut)) {
           logger.trace("Connecting")
@@ -56,34 +56,31 @@ class ConnectionStage(database: String, username: String, password: String)
             case BackendKeyData(pid, key) =>
               logger.trace(s"Backend key data: pid $pid, key: $key")
               pull(pgIn)
-            case ReadyForQuery(txStatus) =>
-              logger.info(s"Connection ready (tx $txStatus)")
-              state = ReadyForCommand
-              pullCommand()
+            case msg: ReadyForQuery => readyForQuery(msg)
+            case msg: ErrorMessage => handleError(msg)
             case msg =>
               logUnknownMessage(msg)
               pull(pgIn)
           }
         }
-        case ReadyForCommand => if (isAvailable(commandIn) && isAvailable(pgOut)) {
-          grab(commandIn) match {
-            case cmd: Statement =>
-              preparedStatements.get(cmd.sql) match {
-                case Some((psId, columnTypes, paramTypes)) => doBind(psId, cmd, columnTypes, paramTypes)
-                case None =>
-                  val psId = UUID.randomUUID()
-                  logger.trace(s"Preparing query ${cmd.sql} with name $psId")
-                  push(pgOut, Parse(psId.toString, cmd.sql, Nil))
-                  state = Queued(List(DescribeStatement(psId.toString), Sync), Parsing(psId, cmd, None, None))
-              }
-            case SimpleQuery(sql) =>
-              logger.trace(s"Executing simple query $sql")
-              push(pgOut, Query(sql))
-              pull(pgIn)
-              state = ExecutingSimpleQuery
+        case ReadyForCommand => if (isAvailable(pgIn)) { //&& isAvailable(resultOut)) {
+          grab(pgIn) match {
+            case err: ErrorMessage => handleError(err)
             case msg =>
               logUnknownMessage(msg)
               pull(pgIn)
+          }
+        } else if (isAvailable(commandIn) && isAvailable(pgOut)) {
+          grab(commandIn) match {
+            case cmd: Statement =>
+              runPreparedStatement(cmd)
+            case SimpleQuery(sql) =>
+              logger.trace(s"Executing simple query $sql")
+              push(pgOut, Query(sql))
+              state = ExecutingSimpleQuery
+            case msg =>
+              logUnknownMessage(msg)
+              pull(commandIn)
           }
         }
         case ExecutingSimpleQuery => if (isAvailable(pgIn)) {
@@ -104,7 +101,9 @@ class ConnectionStage(database: String, username: String, password: String)
             s match {
               case Parsing(_, _, Some(ct), Some(pt)) =>
                 preparedStatements += cmd.sql -> (psId, ct, pt)
-                doBind(psId, cmd, ct, pt)
+                state = Executing(ct)
+                //doBind(psId, cmd, ct, pt)
+                pull(pgIn)
               case _ =>
                 state = s
                 pull(pgIn)
@@ -120,6 +119,8 @@ class ConnectionStage(database: String, username: String, password: String)
             case ParseComplete =>
               logger.trace(s"Parse complete")
               pull(pgIn)
+            case msg: ReadyForQuery => readyForQuery(msg)
+            case msg: ErrorMessage => handleError(msg)
             case msg =>
               logUnknownMessage(msg)
               pull(pgIn)
@@ -137,8 +138,11 @@ class ConnectionStage(database: String, username: String, password: String)
             case CommandComplete(_) =>
               logger.trace("SQL command completed")
               push(resultOut, CommandCompleted)
-              pullCommand()
-              state = ReadyForCommand
+              pull(pgIn)
+              //pullCommand()
+              //state = ReadyForCommand
+            case msg: ReadyForQuery => readyForQuery(msg)
+            case msg: ErrorMessage => handleError(msg)
             case msg =>
               logUnknownMessage(msg)
               pull(pgIn)
@@ -148,7 +152,6 @@ class ConnectionStage(database: String, username: String, password: String)
         case Queued(msg :: rest, nextState) => if (isAvailable(pgOut)) {
           push(pgOut, msg)
           if (rest.isEmpty) {
-            pull(pgIn)
             state = nextState
           } else state = Queued(rest, nextState)
           logger.trace(s"Sending queued message $msg, next state $state")
@@ -157,14 +160,51 @@ class ConnectionStage(database: String, username: String, password: String)
       }
     }
 
-    def doBind(psId: UUID, cmd: Statement, columnTypes: Seq[Int], paramTypes: Seq[Int]): Unit = {
-      logger.trace(s"Binding prepared statement $psId with ${cmd.params.length} parameters")
-      if (!cmd.params.map(_._1).sameElements(paramTypes)) throw new RuntimeException("Wrong parameter types")
-      push(pgOut, Bind("", psId.toString, Nil, cmd.params.map(_._2), Seq.fill(columnTypes.length)(1)))
+    def readyForQuery(msg: ReadyForQuery): Unit = {
+      logger.info(s"Ready for query (tx status ${msg.txStatus})")
+      state = ReadyForCommand
+      pullCommand()
       pull(pgIn)
-      state = Queued(List(Execute("", 0), Sync), Executing(columnTypes))
     }
 
+    def handleError(errorMessage: ErrorMessage): Unit = {
+      val msg = errorMessage.errorFields.foldLeft(CommandFailed("","", None))((r, field) =>
+        field._1 match {
+          case 'C' => r.copy(code = field._2)
+          case 'M' => r.copy(message = field._2)
+          case 'D' => r.copy(detail = Some(field._2))
+          case _ => r
+        })
+      logger.error(msg.toString)
+      push(resultOut, msg)
+      pull(pgIn)
+    }
+
+    def runPreparedStatement(cmd: Statement): Unit = {
+      def bindAndExecute(psId: String) = List(
+        Bind("", psId, Nil, cmd.params.map(_._2), Seq.fill(cmd.columnCount)(1)),
+        Execute("", 0),
+        Sync
+      )
+      val (psId, firstCommand :: nextCommands, nextState) = preparedStatements.get(cmd.sql) match {
+        case Some((psId, columnTypes, paramTypes)) =>  (psId, bindAndExecute(psId.toString), Executing(columnTypes))
+        case None =>
+          val psId = UUID.randomUUID()
+          logger.trace(s"Preparing query ${cmd.sql} with name $psId")
+          (psId, Parse(psId.toString, cmd.sql, Nil) :: DescribeStatement(psId.toString) :: bindAndExecute(psId.toString),
+            Parsing(psId, cmd, None, None))
+      }
+      push(pgOut, firstCommand)
+      state = Queued(nextCommands, nextState)
+    }
+/*
+    def doBind(psId: UUID, cmd: Statement, columnTypes: Seq[Int], paramTypes: Seq[Int]): Unit = {
+      //logger.trace(s"Binding prepared statement $psId with ${cmd.params.length} parameters")
+      //if (!cmd.params.map(_._1).sameElements(paramTypes)) throw new RuntimeException("Wrong parameter types")
+      push(pgOut, Bind("", psId.toString, Nil, cmd.params.map(_._2), Seq.fill(columnTypes.length)(1)))
+      state = Queued(List(Execute("", 0), Sync), Executing(columnTypes))
+    }
+*/
     def pullCommand(): Unit = {
       if (isClosed(commandIn)) {
         disconnect()
@@ -176,6 +216,7 @@ class ConnectionStage(database: String, username: String, password: String)
 
     setHandler(commandIn, new InHandler {
       override def onPush(): Unit = {
+        logger.trace("cmd.in push")
         handleEvent()
       }
       override def onUpstreamFinish(): Unit = {
@@ -192,12 +233,14 @@ class ConnectionStage(database: String, username: String, password: String)
 
     setHandler(pgOut, new OutHandler {
       override def onPull(): Unit = {
+        logger.trace("pg.out pull")
         handleEvent()
       }
       override def onDownstreamFinish(): Unit = completeStage()
     })
     setHandler(pgIn, new InHandler {
       override def onPush(): Unit = {
+        logger.trace("pg.in push")
         handleEvent()
       }
       override def onUpstreamFinish(): Unit = {
@@ -211,6 +254,7 @@ class ConnectionStage(database: String, username: String, password: String)
     })
     setHandler(resultOut, new OutHandler {
       override def onPull(): Unit = {
+        logger.trace("result.out pull")
         handleEvent()
       }
       override def onDownstreamFinish(): Unit = completeStage()

@@ -4,14 +4,17 @@ import akka.stream.{Attributes, FlowShape, Inlet, Outlet}
 import akka.stream.stage.{GraphStageLogic, GraphStageWithMaterializedValue, InHandler, OutHandler}
 import org.reactivestreams.{Processor, Subscriber, Subscription}
 
+import scala.concurrent.{Future, Promise}
+
 /**
   * Created by convpn on 5/9/2017.
   */
-class DownstreamEndpointStage[T, R] extends GraphStageWithMaterializedValue[FlowShape[T, R], Processor[R, T]]{
+class DownstreamEndpointStage[T, R] extends GraphStageWithMaterializedValue[FlowShape[T, R], Future[Processor[R, T]]]{
   val in = Inlet[T]("DownstreamEndpointStage.in")
   val out = Outlet[R]("DownstreamEndpointShape.out")
 
-  override def createLogicAndMaterializedValue(inheritedAttributes: Attributes): (GraphStageLogic, Processor[R, T]) = {
+  override def createLogicAndMaterializedValue(inheritedAttributes: Attributes): (GraphStageLogic, Future[Processor[R, T]]) = {
+    var processor = Promise[Processor[R, T]]
     val logic = new GraphStageLogic(shape) {
       var subscriber: Option[Subscriber[_ >: T]] = None
       var subscription: Option[Subscription] = None
@@ -56,6 +59,8 @@ class DownstreamEndpointStage[T, R] extends GraphStageWithMaterializedValue[Flow
         failStage(ex)
       }
 
+
+
       setHandlers(in, out, new InHandler with OutHandler {
         //Input
         override def onPush(): Unit = {
@@ -69,23 +74,27 @@ class DownstreamEndpointStage[T, R] extends GraphStageWithMaterializedValue[Flow
         }
         override def onDownstreamFinish(): Unit = complete()
       })
-    }
-    val processor = new Processor[R, T] {
-      //Publisher
-      override def subscribe(s: Subscriber[_ >: T]): Unit = {
-        logic.setSubscriber.invoke(Some(s))
-        s.onSubscribe(new Subscription {
-          override def cancel(): Unit = logic.setSubscriber.invoke(None)
-          override def request(n: Long): Unit = logic.pullFromUpstream.invoke(n)
+
+      override def preStart(): Unit = {
+        processor.success(new Processor[R, T] {
+          //Publisher
+          override def subscribe(s: Subscriber[_ >: T]): Unit = {
+            setSubscriber.invoke(Some(s))
+            s.onSubscribe(new Subscription {
+              override def cancel(): Unit = setSubscriber.invoke(None)
+              override def request(n: Long): Unit = pullFromUpstream.invoke(n)
+            })
+          }
+          //Subscriber
+          override def onSubscribe(s: Subscription): Unit = setSubscription.invoke(Some(s))
+          override def onError(t: Throwable): Unit = onProcessorError.invoke(t)
+          override def onComplete(): Unit = onProcessorComplete.invoke()
+          override def onNext(r: R): Unit = pushFromUpstream.invoke(r)
         })
       }
-      //Subscriber
-      override def onSubscribe(s: Subscription): Unit = logic.setSubscription.invoke(Some(s))
-      override def onError(t: Throwable): Unit = logic.onProcessorError.invoke(t)
-      override def onComplete(): Unit = logic.onProcessorComplete.invoke()
-      override def onNext(r: R): Unit = logic.pushFromUpstream.invoke(r)
     }
-    (logic, processor)
+
+    (logic, processor.future)
   }
 
   override def shape: FlowShape[T, R] = FlowShape(in, out)

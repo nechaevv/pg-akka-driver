@@ -18,7 +18,7 @@ import scala.concurrent.{ExecutionContext, Future, Promise}
 /**
   * Created by CONVPN on 5/5/2017.
   */
-class ConnectionPoolImpl(address: InetSocketAddress, database: String, user: String, password: String, maxPoolSize:Int)
+class ConnectionPoolImpl(address: InetSocketAddress, database: String, user: String, password: String, minPoolSize:Int, maxPoolSize: Int)
                         (implicit val as: ActorSystem, mat: Materializer, ec: ExecutionContext) extends ConnectionPool with LazyLogging {
 
   type ConnectionHandle = Processor[SqlCommand, CommandResult]
@@ -26,8 +26,12 @@ class ConnectionPoolImpl(address: InetSocketAddress, database: String, user: Str
 
   override def run(cmd: SqlCommand): Source[ResultRow, NotUsed] = Source.single(cmd).via({
     new UpstreamEndpointStage[SqlCommand, CommandResult](getFreeConnection, conn => freeConnections.updateAndGet(conns => conn :: conns))
-  }).takeWhile(cr => cr != CommandCompleted, inclusive = false).collect({
+  }).takeWhile(cr => cr.isInstanceOf[ResultRow], inclusive = true).collect({
     case rr: ResultRow => rr
+    case CommandFailed(code, message, detail) => {
+      logger.error(message)
+      throw new RuntimeException(s"Query failed: $code - $message")
+    }
   })
 
   override def terminate(): Future[Unit] = Future.sequence(freeConnections.get().map(stopConnection)).map(_ => ())
@@ -67,11 +71,12 @@ class ConnectionPoolImpl(address: InetSocketAddress, database: String, user: Str
     connectionHandleFlow.joinMat(new ConnectionStage(database, user, password))(Keep.left).joinMat(pgMessageFlow)(Keep.left)
   }
 
-  private def getFreeConnection(): ConnectionHandle = freeConnections
-    .getAndUpdate(conns => conns.drop(1))
-    .headOption.getOrElse({
-    logger.debug(s"Starting new connection")
-    connectionGraph.run()
-  })
+  private def getFreeConnection(): Future[ConnectionHandle] = freeConnections
+    .getAndUpdate(conns => conns.drop(1)) match {
+    case conn :: _ => Future.successful(conn)
+    case Nil =>
+      logger.debug(s"Starting new connection")
+      connectionGraph.run()
+  }
 
 }
