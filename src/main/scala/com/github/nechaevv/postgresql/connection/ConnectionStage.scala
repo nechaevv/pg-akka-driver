@@ -5,26 +5,27 @@ import java.util.UUID
 
 import akka.stream._
 import akka.stream.stage.{GraphStage, GraphStageLogic, InHandler, OutHandler}
-import com.github.nechaevv.postgresql.protocol.backend.{AuthenticationCleartextPassword, AuthenticationMD5Password, AuthenticationOk, BackendKeyData, BackendMessage, BindComplete, CommandComplete, DataRow, ErrorMessage, ParameterDescription, ParameterStatus, ParseComplete, ReadyForQuery, RowDescription}
-import com.github.nechaevv.postgresql.protocol.frontend.{Bind, DescribeStatement, Execute, FrontendMessage, Parse, PasswordMessage, Query, StartupMessage, Sync, Terminate}
+import akka.util.ByteString
+import com.github.nechaevv.postgresql.protocol.backend
+import com.github.nechaevv.postgresql.protocol.frontend
 import com.typesafe.scalalogging.LazyLogging
 
 /**
   * Created by vn on 11.03.17.
   */
 class ConnectionStage(database: String, username: String, password: String)
-  extends GraphStage[BidiShape[SqlCommand, FrontendMessage, BackendMessage, CommandResult]]
+  extends GraphStage[BidiShape[SqlCommand, frontend.FrontendMessage, backend.BackendMessage, CommandResult]]
   with LazyLogging {
 
   val commandIn = Inlet[SqlCommand]("ConnectionStage.command.in")
   val resultOut = Outlet[CommandResult]("ConnectionStage.command.Out")
-  val pgIn = Inlet[BackendMessage]("ConnectionStage.db.in")
-  val pgOut = Outlet[FrontendMessage]("ConnectionStage.db.out")
+  val pgIn = Inlet[backend.BackendMessage]("ConnectionStage.db.in")
+  val pgOut = Outlet[frontend.FrontendMessage]("ConnectionStage.db.out")
 
   override def createLogic(inheritedAttributes: Attributes): GraphStageLogic = new GraphStageLogic(shape) {
 
     var state: ConnectionStageState = Initializing
-    var preparedStatements: Map[String, (UUID, Seq[Int], Seq[Int])] = Map.empty
+    var preparedStatements: Map[Query, (UUID, Seq[Int], Seq[Int])] = Map.empty
 
     private def handleEvent(): Unit = {
       //logger.trace(s"Event: state $state commandIn: ${isAvailable(commandIn)}, pgOut: ${isAvailable(pgOut)}, " +
@@ -32,32 +33,32 @@ class ConnectionStage(database: String, username: String, password: String)
       state match {
         case Initializing => if (isAvailable(pgOut)) {
           logger.trace("Connecting")
-          push(pgOut, StartupMessage(database, username))
+          push(pgOut, frontend.StartupMessage(database, username))
           pull(pgIn)
           state = Connecting
         }
         case Connecting => if (isAvailable(pgIn) && isAvailable(pgOut)) {
           val cmd = grab(pgIn)
           cmd match {
-            case AuthenticationCleartextPassword =>
+            case backend.AuthenticationCleartextPassword =>
               logger.trace("Requested cleartext auth")
-              push(pgOut, PasswordMessage(password))
+              push(pgOut, frontend.PasswordMessage(password))
               pull(pgIn)
-            case AuthenticationMD5Password(salt) =>
+            case backend.AuthenticationMD5Password(salt) =>
               logger.trace("Requested md5 auth")
-              push(pgOut, PasswordMessage(md5password(username, password, salt)))
+              push(pgOut, frontend.PasswordMessage(md5password(username, password, salt)))
               pull(pgIn)
-            case AuthenticationOk =>
+            case backend.AuthenticationOk =>
               logger.trace("Authentication succeeded")
               pull(pgIn)
-            case ParameterStatus(name, value) =>
+            case backend.ParameterStatus(name, value) =>
               logger.trace(s"Parameter $name=$value")
               pull(pgIn)
-            case BackendKeyData(pid, key) =>
+            case backend.BackendKeyData(pid, key) =>
               logger.trace(s"Backend key data: pid $pid, key: $key")
               pull(pgIn)
-            case msg: ReadyForQuery => readyForQuery(msg)
-            case msg: ErrorMessage => handleError(msg)
+            case msg: backend.ReadyForQuery => readyForQuery(msg)
+            case msg: backend.ErrorMessage => handleError(msg)
             case msg =>
               logUnknownMessage(msg)
               pull(pgIn)
@@ -65,7 +66,7 @@ class ConnectionStage(database: String, username: String, password: String)
         }
         case ReadyForCommand => if (isAvailable(pgIn)) { //&& isAvailable(resultOut)) {
           grab(pgIn) match {
-            case err: ErrorMessage => handleError(err)
+            case err: backend.ErrorMessage => handleError(err)
             case msg =>
               logUnknownMessage(msg)
               pull(pgIn)
@@ -76,7 +77,7 @@ class ConnectionStage(database: String, username: String, password: String)
               runPreparedStatement(cmd)
             case SimpleQuery(sql) =>
               logger.trace(s"Executing simple query $sql")
-              push(pgOut, Query(sql))
+              push(pgOut, frontend.Query(sql))
               state = ExecutingSimpleQuery
             case msg =>
               logUnknownMessage(msg)
@@ -85,11 +86,11 @@ class ConnectionStage(database: String, username: String, password: String)
         }
         case ExecutingSimpleQuery => if (isAvailable(pgIn)) {
           grab(pgIn) match {
-            case RowDescription(fields) =>
+            case backend.RowDescription(fields) =>
               logger.trace(s"Result columns: ${(for (field <- fields) yield s"${field.name}(${field.dataTypeOid})").mkString(",")}")
               val columnTypes = fields.map(_.dataTypeOid)
               pull(pgIn)
-              state = Executing(columnTypes)
+              state = Executing(columnTypes, Nil)
             case msg =>
               logUnknownMessage(msg)
               pull(pgIn)
@@ -100,8 +101,8 @@ class ConnectionStage(database: String, username: String, password: String)
           def storeStatementAndExecuteIfCompleted(s: Parsing): Unit = {
             s match {
               case Parsing(_, _, Some(ct), Some(pt)) =>
-                preparedStatements += cmd.sql -> (psId, ct, pt)
-                state = Executing(ct)
+                preparedStatements += cmd.query -> (psId, ct, pt)
+                state = Executing(ct, cmd.resultFormats)
                 //doBind(psId, cmd, ct, pt)
                 pull(pgIn)
               case _ =>
@@ -110,39 +111,44 @@ class ConnectionStage(database: String, username: String, password: String)
             }
           }
           grab(pgIn) match {
-            case RowDescription(fields) =>
+            case backend.RowDescription(fields) =>
               logger.trace(s"Result columns: ${(for (field <- fields) yield s"${field.name}(${field.dataTypeOid})").mkString(",")}")
               storeStatementAndExecuteIfCompleted(currentState.copy(columnTypes = Some(fields.map(_.dataTypeOid))))
-            case ParameterDescription(paramTypes) =>
+            case backend.ParameterDescription(paramTypes) =>
               logger.trace(s"Parameter types: ${paramTypes.mkString(",")}")
               storeStatementAndExecuteIfCompleted(currentState.copy(paramTypes = Some(paramTypes)))
-            case ParseComplete =>
+            case backend.ParseComplete =>
               logger.trace(s"Parse complete")
               pull(pgIn)
-            case msg: ReadyForQuery => readyForQuery(msg)
-            case msg: ErrorMessage => handleError(msg)
+            case msg: backend.ReadyForQuery => readyForQuery(msg)
+            case msg: backend.ErrorMessage => handleError(msg)
             case msg =>
               logUnknownMessage(msg)
               pull(pgIn)
           }
         }
-        case Executing(columnTypes) => if (isAvailable(pgIn) && isAvailable(resultOut)) {
+        case Executing(columnTypes, resultFormats) => if (isAvailable(pgIn) && isAvailable(resultOut)) {
           grab(pgIn) match {
-            case BindComplete =>
+            case backend.BindComplete =>
               logger.trace("Bind completed, executing query")
               pull(pgIn)
-            case DataRow(row) =>
+            case backend.DataRow(row) =>
               logger.trace("Data row received")
-              push(resultOut, ResultRow(columnTypes zip row))
+              push(resultOut, ResultRow(columnTypes zip row.zip(resultFormats.padTo(row.length, ValueFormats.Text)).map({
+                case (Some(bs), ValueFormats.Text) => StringValue(bs.decodeString("UTF-8"))
+                case (Some(bs), ValueFormats.Binary) => BinaryValue(bs)
+                case (Some(_), _) => throw new IllegalArgumentException
+                case (None, _) => NullValue
+              })))
               pull(pgIn)
-            case CommandComplete(_) =>
+            case backend.CommandComplete(_) =>
               logger.trace("SQL command completed")
               push(resultOut, CommandCompleted)
               pull(pgIn)
               //pullCommand()
               //state = ReadyForCommand
-            case msg: ReadyForQuery => readyForQuery(msg)
-            case msg: ErrorMessage => handleError(msg)
+            case msg: backend.ReadyForQuery => readyForQuery(msg)
+            case msg: backend.ErrorMessage => handleError(msg)
             case msg =>
               logUnknownMessage(msg)
               pull(pgIn)
@@ -160,14 +166,14 @@ class ConnectionStage(database: String, username: String, password: String)
       }
     }
 
-    def readyForQuery(msg: ReadyForQuery): Unit = {
+    def readyForQuery(msg: backend.ReadyForQuery): Unit = {
       logger.info(s"Ready for query (tx status ${msg.txStatus})")
       state = ReadyForCommand
       pullCommand()
       pull(pgIn)
     }
 
-    def handleError(errorMessage: ErrorMessage): Unit = {
+    def handleError(errorMessage: backend.ErrorMessage): Unit = {
       val msg = errorMessage.errorFields.foldLeft(CommandFailed("","", None))((r, field) =>
         field._1 match {
           case 'C' => r.copy(code = field._2)
@@ -180,18 +186,27 @@ class ConnectionStage(database: String, username: String, password: String)
       pull(pgIn)
     }
 
+    def pgValueToBS(v: PgValue) = v match {
+      case BinaryValue(v) => (Some(v), ValueFormats.Binary)
+      case StringValue(v) => (Some(ByteString(v)), ValueFormats.Text)
+      case NullValue => (None, ValueFormats.Text)
+    }
+
     def runPreparedStatement(cmd: Statement): Unit = {
-      def bindAndExecute(psId: String) = List(
-        Bind("", psId, Nil, cmd.params.map(_._2), Seq.fill(cmd.columnCount)(1)),
-        Execute("", 0),
-        Sync
-      )
-      val (psId, firstCommand :: nextCommands, nextState) = preparedStatements.get(cmd.sql) match {
-        case Some((psId, columnTypes, paramTypes)) =>  (psId, bindAndExecute(psId.toString), Executing(columnTypes))
+      def bindAndExecute(psId: String) = {
+        val (paramValues, paramFormats) = cmd.parameters.map(pgValueToBS).unzip
+        List(
+          frontend.Bind("", psId, paramFormats, paramValues, cmd.resultFormats),
+          frontend.Execute("", 0),
+          frontend.Sync
+        )
+      }
+      val (psId, firstCommand :: nextCommands, nextState) = preparedStatements.get(cmd.query) match {
+        case Some((psId, columnTypes, paramTypes)) =>  (psId, bindAndExecute(psId.toString), Executing(columnTypes, cmd.resultFormats))
         case None =>
           val psId = UUID.randomUUID()
-          logger.trace(s"Preparing query ${cmd.sql} with name $psId")
-          (psId, Parse(psId.toString, cmd.sql, Nil) :: DescribeStatement(psId.toString) :: bindAndExecute(psId.toString),
+          logger.trace(s"Preparing query ${cmd.query.sql} with name $psId")
+          (psId, frontend.Parse(psId.toString, cmd.query.sql, cmd.query.parameterTypes) :: frontend.DescribeStatement(psId.toString) :: bindAndExecute(psId.toString),
             Parsing(psId, cmd, None, None))
       }
       push(pgOut, firstCommand)
@@ -262,12 +277,12 @@ class ConnectionStage(database: String, username: String, password: String)
 
     def disconnect(): Unit = {
       logger.trace("Terminating connection")
-      if (isAvailable(pgOut)) push(pgOut, Terminate)
+      if (isAvailable(pgOut)) push(pgOut, frontend.Terminate)
     }
 
   }
 
-  override def shape: BidiShape[SqlCommand, FrontendMessage, BackendMessage, CommandResult] = {
+  override def shape: BidiShape[SqlCommand, frontend.FrontendMessage, backend.BackendMessage, CommandResult] = {
     BidiShape(commandIn, pgOut, pgIn, resultOut)
   }
 
@@ -290,5 +305,5 @@ case object Connecting extends ConnectionStageState
 case object ReadyForCommand extends ConnectionStageState
 case object ExecutingSimpleQuery extends ConnectionStageState
 case class Parsing(stmtId: UUID, cmd: Statement, columnTypes: Option[Seq[Int]], paramTypes: Option[Seq[Int]]) extends ConnectionStageState
-case class Executing(columnTypes: Seq[Int]) extends ConnectionStageState
-case class Queued(msgs: List[FrontendMessage], state: ConnectionStageState) extends ConnectionStageState
+case class Executing(columnTypes: Seq[Int], resultFormats: Seq[Int]) extends ConnectionStageState
+case class Queued(msgs: List[frontend.FrontendMessage], state: ConnectionStageState) extends ConnectionStageState

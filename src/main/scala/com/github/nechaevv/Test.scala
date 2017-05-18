@@ -33,8 +33,10 @@ object Test extends App with LazyLogging {
   val user = "postgres"
   val password = "postgres"
 
-  val testCommand = Statement("SELECT datname, encoding, datistemplate, datconnlimit FROM pg_database", 4, Nil)
-  val testCommand2 = Statement("SELECT datname, encoding, datistemplate, datconnlimit FROM pg_database", 4, Nil)
+  val q1 = Query("SELECT datname, encoding, datistemplate, datconnlimit FROM pg_database", Nil)
+
+  val testCommand = Statement(q1, Nil, Nil)
+  val testCommand2 = Statement(q1, Nil, Seq(1,1,1,1))
   //val testCommand = SimpleQuery("SELECT * FROM pg_database")
 
   import com.github.nechaevv.postgresql.marshal.DefaultMarshallers._
